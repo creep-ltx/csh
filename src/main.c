@@ -110,6 +110,10 @@ static int smain(void)
         r = arg[2] ? lang_eval((char *)arg[2]) : lang_source((char *)arg[0], n, args);
         os_flush();
         FreeArgs(rd);
+        /* the break relay and the jobs end with csh: their code is csh's (a
+         * relay left behind waits in freed memory) */
+        job_leave();
+        if (!csh.module) cli->cli_Module = 0;
         return r;
     }
     if (arg[0] && !(from = Open((STRPTR)arg[0], MODE_OLDFILE))) {
