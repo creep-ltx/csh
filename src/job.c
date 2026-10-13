@@ -50,8 +50,8 @@ struct stage {
     struct stage *next;
     struct prepared p;
     struct Process *proc;
-    struct Task *parent;
-    char name[128];
+    struct Task * volatile parent;   /* NULL once csh has ended (its jobs left running) */
+    char name[256];
     char *args;
     LONG arglen;
     BPTR in, out, err;
@@ -62,6 +62,8 @@ struct stage {
     char argstr[16];
 };
 
+struct tmpfile { struct tmpfile *next; char name[48]; };
+
 struct job {
     struct job *next;
     int id, bg, nstages;
@@ -69,9 +71,9 @@ struct job {
     struct stage *st, **tail;
     BPTR jin, jout;
     int jinown;
-    char tmp[8][44];
-    int ntmp, tmpk;
-    char tempname[44];
+    struct tmpfile *tmp;        /* T: files deleted when the job ends */
+    int tmpk;
+    char tempname[48];
 };
 
 static ULONG donesig;
@@ -110,8 +112,12 @@ static void stage_entry(void)
     if (st->err) me->pr_CES = st->err;
     else if (st->errtoout) me->pr_CES = Output();
     if (st->p.seg) {
+        /* the child's own PROGDIR is a lock DOS made for it (a copy of csh's)
+         * and frees when it ends: put aside and back, the command's (csh's,
+         * freed by run_release) only lent */
+        BPTR olddir = 0;
         SetProgramName(st->name);
-        if (st->p.progdir) SetProgramDir(st->p.progdir);
+        if (st->p.progdir) olddir = SetProgramDir(st->p.progdir);
         if (cli) cli->cli_Module = st->p.seg;
         SetIoErr(0);
         rc = RunCommand(st->p.seg, st->p.stack, st->args, st->arglen);
@@ -121,7 +127,7 @@ static void stage_entry(void)
             if (!cli->cli_Module) st->detached = 1;
             cli->cli_Module = 0;
         }
-        SetProgramDir(0);
+        if (st->p.progdir) SetProgramDir(olddir);
     } else {
         rc = SystemTags(st->p.romline, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
         r2 = IoErr();
@@ -135,7 +141,7 @@ static void stage_entry(void)
     st->r2 = rc ? r2 : 0;
     Forbid();
     st->done = 1;
-    Signal(st->parent, donesig);
+    if (st->parent) Signal(st->parent, donesig);    /* csh may have ended (job_leave) */
     /* returns with Forbid on: the process ends in the ROM, not in csh's code */
 }
 
@@ -180,7 +186,7 @@ int os_pipe(void *job, long *readh, long *writeh)
     BPTR r, w;
     (void)job;
     strcpy(name, "PIPE:csh");
-    ltoa10(csh.me->pr_TaskNum, name + strlen(name));
+    csh_tag(name + strlen(name));
     strcat(name, "_");
     ltoa10(++pipek, name + strlen(name));
     /* the reading end first: a writer that is done before the reader opens
@@ -240,6 +246,12 @@ int job_spawn_prepared(void *job, struct cmdline *c, long inh, long outh, struct
         out = f;
     }
     if (c->err[0] && !(st->err = openfor(c->err, MODE_NEWFILE, c->err_append))) { PrintFault(IoErr(), c->err); goto fail; }
+    if (j->bg && out == j->jout) {
+        /* a job writes to the console through a handle of its own, closed
+         * by DOS when it ends: csh's may be gone by then (the tab closed) */
+        BPTR f = Open("*", MODE_NEWFILE);
+        if (f) out = f;
+    }
     st->errtoout = c->errtoout;
     strncpy(st->name, c->cmd, sizeof st->name - 1);
     if (!(st->args = AllocVec(c->arglen + 1, MEMF_ANY))) goto fail;
@@ -298,7 +310,7 @@ long os_tempout(void *job)
     struct job *j = job;
     BPTR fh;
     strcpy(j->tempname, "T:csh-pipe-");
-    ltoa10(csh.me->pr_TaskNum, j->tempname + strlen(j->tempname));
+    csh_tag(j->tempname + strlen(j->tempname));
     strcat(j->tempname, "-");
     ltoa10(++j->tmpk, j->tempname + strlen(j->tempname));
     if (!(fh = Open(j->tempname, MODE_NEWFILE))) { PrintFault(IoErr(), j->tempname); return 0; }
@@ -314,7 +326,11 @@ long os_tempin(void *job)
 void os_job_tmp(void *job, const char *name)
 {
     struct job *j = job;
-    if (j->ntmp < 8) strncpy(j->tmp[j->ntmp++], name, 43);
+    struct tmpfile *t = AllocVec(sizeof *t, MEMF_ANY | MEMF_CLEAR);
+    if (!t) { DeleteFile((STRPTR)name); return; }   /* better gone early than left */
+    strncpy(t->name, name, sizeof t->name - 1);
+    t->next = j->tmp;
+    j->tmp = t;
 }
 
 static int alldone(struct job *j)
@@ -332,21 +348,29 @@ static void breakall(struct job *j)
     Permit();
 }
 
-/* Waits for every stage; Ctrl-C goes on to each one still running. */
-static void waitjob(struct job *j)
+/* Waits for every stage; Ctrl-C goes on to each one still running. A
+ * second Ctrl-C (a stage that ignores breaks) stops waiting: returns 1,
+ * the job goes on in the background. */
+static int waitjob(struct job *j)
 {
+    int breaks = 0;
     while (!alldone(j)) {
         ULONG sig = Wait(donesig | SIGBREAKF_CTRL_C);
-        if (sig & SIGBREAKF_CTRL_C) breakall(j);
+        if (sig & SIGBREAKF_CTRL_C) {
+            if (++breaks >= 2) return 1;
+            breakall(j);
+        }
     }
+    return 0;
 }
 
-/* The last stage's rc; everything given back. */
-static LONG reap(struct job *j)
+/* Everything given back; the last stage's rc (and its Result2 in *r2).
+ * $RC is the caller's to set: a job ending in the background leaves it. */
+static LONG reap(struct job *j, LONG *r2p)
 {
     struct stage *s, *n;
+    struct tmpfile *t, *tn;
     LONG rc = 0, r2 = 0;
-    int i;
     for (s = j->st; s; s = n) {
         n = s->next;
         rc = s->rc; r2 = s->r2;
@@ -355,42 +379,46 @@ static LONG reap(struct job *j)
         if (s->args) FreeVec(s->args);
         FreeVec(s);
     }
-    for (i = 0; i < j->ntmp; i++) {     /* a child may hold it a moment longer */
+    j->st = NULL;
+    for (t = j->tmp; t; t = tn) {     /* a child may hold it a moment longer */
         int k;
-        for (k = 0; k < 25 && !DeleteFile(j->tmp[i]) && IoErr() == ERROR_OBJECT_IN_USE; k++) Delay(2);
+        tn = t->next;
+        for (k = 0; k < 25 && !DeleteFile(t->name) && IoErr() == ERROR_OBJECT_IN_USE; k++) Delay(2);
+        FreeVec(t);
     }
+    j->tmp = NULL;
     if (j->jinown) Close(j->jin);
-    set_rc(rc, r2);
+    j->jinown = 0;
+    if (r2p) *r2p = r2;
     return rc;
 }
 
+static void addjob(struct job *j);
+
 long os_job_end(void *job, long lastrc, int lastinternal)
 {
-    struct job *j = job, **p;
+    struct job *j = job;
     LONG rc;
     if (!j->bg) {
+        LONG r2, lastr2 = csh.cli->cli_Result2;     /* the last stage's, when it ran in csh */
         DBG(("wait job\n"));
-        waitjob(j);
+        if (waitjob(j)) {
+            /* Ctrl-C twice: a stage ignores breaks; it goes on as a job */
+            os_flush();
+            addjob(j);
+            FPuts(csh.out, "csh: still running, in the background now (jobs, fg, kill)\n");
+            set_rc(20, 0);
+            return 20;
+        }
         DBG(("waited\n"));
-        rc = reap(j);
-        if (lastinternal || !j->nstages) rc = lastrc;
+        rc = reap(j, &r2);
+        if (lastinternal || !j->nstages) { rc = lastrc; r2 = lastr2; }
         FreeVec(j);
-        set_rc(rc, csh.cli->cli_Result2);
+        set_rc(rc, r2);
         return rc;
     }
-    if (!j->st) { reap(j); FreeVec(j); return lastrc; }
-    {   /* the lowest free number */
-        int id = 1;
-        struct job *k;
-        for (;;) {
-            for (k = jobs; k && k->id != id; k = k->next) ;
-            if (!k) break;
-            id++;
-        }
-        j->id = id;
-    }
-    for (p = &jobs; *p; p = &(*p)->next) ;
-    *p = j;
+    if (!j->st) { reap(j, NULL); FreeVec(j); return lastrc; }
+    addjob(j);
     {
         char b[16];
         struct stage *s;
@@ -408,6 +436,23 @@ long os_job_end(void *job, long lastrc, int lastinternal)
 }
 
 
+/* In the job list, with the lowest free number. */
+static void addjob(struct job *j)
+{
+    struct job **p, *k;
+    int id = 1;
+    for (;;) {
+        for (k = jobs; k && k->id != id; k = k->next) ;
+        if (!k) break;
+        id++;
+    }
+    j->id = id;
+    j->bg = 1;
+    j->next = NULL;
+    for (p = &jobs; *p; p = &(*p)->next) ;
+    *p = j;
+}
+
 /* ---- the break relay ---- */
 
 static struct Task *relay, *relayfor;
@@ -415,6 +460,7 @@ static struct MsgPort *relayport;
 static struct job *relayjob;
 static volatile int relayquit, relaygone;
 static void *relaymem;
+static UBYTE relaybit;          /* the signal CreateMsgPort took: DeleteMsgPort frees it */
 
 static void relay_entry(void)
 {
@@ -440,6 +486,10 @@ static int relaystart(void)
     if (!(relayport = CreateMsgPort())) { FreeVec(relaymem); relaymem = NULL; return 0; }
     t = relaymem;
     stk = (char *)(t + 1);
+    /* an empty list: RemTask walks it (the AddTask autodoc's NewList) */
+    t->tc_MemEntry.lh_Head = (struct Node *)&t->tc_MemEntry.lh_Tail;
+    t->tc_MemEntry.lh_Tail = NULL;
+    t->tc_MemEntry.lh_TailPred = (struct Node *)&t->tc_MemEntry.lh_Head;
     t->tc_Node.ln_Type = NT_TASK;
     t->tc_Node.ln_Name = "csh break relay";
     t->tc_Node.ln_Pri = csh.me->pr_Task.tc_Node.ln_Pri + 1;
@@ -449,9 +499,15 @@ static int relaystart(void)
     relayfor = (struct Task *)csh.me;
     relayquit = relaygone = 0;
     /* the console signals the port's task: the relay */
+    relaybit = relayport->mp_SigBit;
     relayport->mp_SigTask = t;
     relayport->mp_SigBit = SIGBREAKB_CTRL_C;
-    if (!AddTask(t, (APTR)relay_entry, NULL)) { DeleteMsgPort(relayport); relayport = NULL; FreeVec(relaymem); relaymem = NULL; return 0; }
+    if (!AddTask(t, (APTR)relay_entry, NULL)) {
+        relayport->mp_SigTask = (struct Task *)csh.me;
+        relayport->mp_SigBit = relaybit;
+        DeleteMsgPort(relayport); relayport = NULL; FreeVec(relaymem); relaymem = NULL;
+        return 0;
+    }
     relay = t;
     return 1;
 }
@@ -464,18 +520,25 @@ static void relaystop(void)
     while (!relaygone) Delay(1);
     relay = NULL;
     relayport->mp_SigTask = (struct Task *)csh.me;
+    relayport->mp_SigBit = relaybit;           /* its own bit freed, not Ctrl-C's */
     DeleteMsgPort(relayport);
     relayport = NULL;
     FreeVec(relaymem);
     relaymem = NULL;
 }
 
-/* The console's breaks to port (returns the one before), or 0 if it is no console. */
+/* The console's breaks to port (returns the one before), or 0 if it is no
+ * console. The answer is DOSTRUE with the old port in res2 (the Guru Book,
+ * 21.2.4.3; CTerm does so): 0.1b3 took res1, DOSTRUE, for the port and
+ * "gave back" port -1. A handler answering the port in res1 is read too. */
 static LONG changesignal(BPTR con, struct MsgPort *port)
 {
     struct FileHandle *fh = BADDR(con);
+    LONG r;
     if (!con || !fh->fh_Type || !IsInteractive(con)) return 0;
-    return DoPkt(fh->fh_Type, ACTION_CHANGE_SIGNAL, fh->fh_Arg1, (LONG)port, 0, 0, 0);
+    r = DoPkt(fh->fh_Type, ACTION_CHANGE_SIGNAL, fh->fh_Arg1, (LONG)port, 0, 0, 0);
+    if (r == DOSTRUE) r = IoErr();
+    return r;
 }
 
 static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p);
@@ -494,12 +557,14 @@ static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p)
     if (!in) in = Open("NIL:", MODE_OLDFILE);
     if (j->st && relaystart()) {
         relayjob = j;
-        if ((old = changesignal(con, relayport))) moved = 1;
+        old = changesignal(con, relayport);
+        moved = 1;
     }
     c->inh = in;
     rc = p ? run_prepared(c, p) : run_cmd(c, 0);
     c->inh = 0;
-    if (moved) changesignal(con, (struct MsgPort *)old);
+    /* back where it was; none said: csh's own (never left at the relay) */
+    if (moved) changesignal(con, old ? (struct MsgPort *)old : &csh.me->pr_MsgPort);
     relayjob = NULL;
     if (owned(j, in)) Close(in);
     return rc;
@@ -551,7 +616,7 @@ void job_news(void)
         if (alldone(j)) {
             LONG rc;
             unlink_(j);
-            rc = reap(j);
+            rc = reap(j, NULL);
             say(j, "Done", rc);
             FreeVec(j);
         }
@@ -581,9 +646,9 @@ long job_fg(const char *spec)
     os_write(j->text, strlen(j->text));
     os_write("\n", 1);
     os_flush();
-    waitjob(j);
+    if (waitjob(j)) { sh_error("fg: still running (Ctrl-C ignored):", j->text); return 20; }
     unlink_(j);
-    rc = reap(j);
+    rc = reap(j, NULL);
     FreeVec(j);
     return rc;
 }
@@ -602,9 +667,9 @@ long job_waitall(void)
     struct job *j;
     LONG rc = 0;
     while ((j = jobs)) {
-        waitjob(j);
+        if (waitjob(j)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
         unlink_(j);
-        rc = reap(j);
+        rc = reap(j, NULL);
         FreeVec(j);
     }
     return rc;
@@ -616,11 +681,17 @@ void job_leave(void)
 {
     struct job *j, *n;
     if (job_running()) {
+        struct stage *s;
         csh.module = 0;
+        /* the children must not Signal csh when they end: it is gone */
+        Forbid();
+        for (j = jobs; j; j = j->next)
+            for (s = j->st; s; s = s->next) s->parent = NULL;
+        Permit();
         relaystop();
         return;
     }
-    for (j = jobs; j; j = n) { n = j->next; reap(j); FreeVec(j); }
+    for (j = jobs; j; j = n) { n = j->next; reap(j, NULL); FreeVec(j); }
     jobs = NULL;
     if (donebit >= 0) FreeSignal(donebit);
     donebit = -1;

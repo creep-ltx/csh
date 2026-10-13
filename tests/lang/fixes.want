@@ -1,0 +1,22 @@
+in-script
+after
+[in-script]
+in-script
+loop 1
+in-script
+loop 2
+2
+gone from ENV:
+empty-is-nothing
+csh: printf: not a number: abc
+[0]
+sigalloc 0000FFFF
+sigalloc 0000FFFF
+pcat 0
+pipes still work
+ls rc 0
+deepest listed
+RAM:ascr
+RAM:nosuch: object not found
+ls rc 5
+got hi

@@ -36,7 +36,10 @@ replacement.**
 - Untested on the user's own scripts and daily use: the next session should ask what the user
   ran into.
 
-1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit (`docs/audit-2026-10-13.md`) lists 15 crash/leak bugs to fix first.**
+1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
+   (`docs/audit-2026-10-13.md`) and its fixes: csh 0.1b4 and ls 0.2 (built, PC tests and FS-UAE
+   green, NOT yet on the A1200 - the A1200 still has 0.1b3 and ls 0.1).** Install them after asking the
+   user; then try the prompt in CTerm (pastes, the redraw, CSI 6n).
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
 3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):

@@ -33,12 +33,21 @@ static const char *prompt;
 static int plen;                 /* the prompt's visible width */
 static int currow;               /* the cursor's row now, counted from the prompt's first */
 static int drawnlen;             /* visible width drawn after the prompt (line + suggestion) */
-static char last[LINE_MAX * 2];  /* what was drawn: the line's string, escapes and all */
-static int lastn, lastvalid, lastsug;
+#define RMAX (LINE_MAX * 4)      /* the line and suggestion (2 KB at most) and their colours */
+static char last[RMAX];          /* what was drawn: the line's string, escapes and all */
+static int lastn, lastvalid;
 static char sug[LINE_MAX];       /* the suggestion's rest */
 static int suglen;
 static int hidx, origlen, navigating, judged;
 static char *pending;            /* the rest of a pasted text, one line a prompt */
+static int ungot;                /* a key read and given back (Ctrl+R ended by it) */
+
+static int getkey(void)
+{
+    int k = ungot;
+    if (k) { ungot = 0; return k; }
+    return term_key();
+}
 
 static int vislen(const char *s)
 {
@@ -63,21 +72,32 @@ static int vislen(const char *s)
 
 static int curcol = -1;
 static char *ro;
-static int rn;
+static int rn, rleft;            /* rleft: the line's characters still to come */
 
 static void rput(const char *s, int n)
 {
-    if (rn + n >= (int)sizeof last) return;
+    if (rn + n >= RMAX) return;
     memcpy(ro + rn, s, n); rn += n;
 }
 
+/* A colour change: only while the text still to come fits after it (a
+ * long line of $vars and quotes runs out of colours, never of text). */
 static void colour(int c)
 {
-    const char *s;
+    const char *s = c >= 0 ? prefs_sgr(c) : "";
+    if (c == curcol) return;
+    if (rn + (int)strlen(s) + 8 + rleft >= RMAX) c = -1, s = "";
     if (c == curcol) return;
     if (curcol >= 0 && *prefs_sgr(curcol)) rput("\x1b[0m", 4);
     curcol = c;
-    if (c >= 0 && *(s = prefs_sgr(c))) rput(s, strlen(s));
+    if (*s) rput(s, strlen(s));
+}
+
+/* # starts a comment at a word's start, except an Amiga pattern (#? #( #[ ## #~), as lang.c */
+static int commentat(int i)
+{
+    char d = i + 1 < len ? buf[i + 1] : 0;
+    return (i == 0 || buf[i - 1] == ' ' || buf[i - 1] == '\t') && d != '?' && d != '(' && d != '[' && d != '#' && d != '~';
 }
 
 static int iskw(const char *w, int n)
@@ -109,6 +129,7 @@ static int render(char *out, int *endcol)
     while (i < len) {
         char c = buf[i];
         int s = i;
+        rleft = len - i + suglen;
         if (c == ' ' || c == '\t') { colour(-1); rput(buf + i, 1); i++; continue; }
         if (c == ';' || c == '|' || c == '&' || c == '(' || c == ')') {
             while (i < len && (buf[i] == ';' || buf[i] == '|' || buf[i] == '&' || buf[i] == '(' || buf[i] == ')')) i++;
@@ -116,7 +137,7 @@ static int render(char *out, int *endcol)
             cmdplace = 1;
             continue;
         }
-        if (c == '#' && (s == 0 || buf[s - 1] == ' ' || buf[s - 1] == '\t') && !(i + 1 < len && buf[i + 1] == '?')) {
+        if (c == '#' && commentat(i)) {
             colour(C_COMMENT); rput(buf + i, len - i); i = len; break;
         }
         if (c == '>' || c == '<' || (c >= '0' && c <= '2' && i + 1 < len && buf[i + 1] == '>') || (c == '*' && i + 1 < len && buf[i + 1] == '>')) {
@@ -142,9 +163,11 @@ static int render(char *out, int *endcol)
                     colour(C_VAR); rput(buf + i, k - i + 1); i = k + 1;
                     /* the value as an argument, the command still to come */
                 } else {
-                    kind = comp_kind(buf + i, e - i);
-                    /* the word being typed is not judged yet unless it is known */
-                    if (kind == W_UNKNOWN && e == len && cur == len && !judged) kind = W_NONE;
+                    /* the word being typed: no disk asked about it (a key costs
+                     * nothing), and not called unknown yet */
+                    int typing = e == len && cur == len && !judged;
+                    kind = comp_kind(buf + i, e - i, typing);
+                    if (kind == W_UNKNOWN && typing) kind = W_NONE;
                     colour(kind == W_COMMAND ? C_COMMAND : kind == W_BUILTIN ? C_BUILTIN : kind == W_UNKNOWN ? C_UNKNOWN : -1);
                     rput(buf + i, e - i);
                     i = e;
@@ -176,6 +199,7 @@ static int render(char *out, int *endcol)
             }
         }
     }
+    rleft = suglen;
     if (suglen) { colour(C_SUGGEST); rput(sug, suglen); }
     *endcol = curcol;
     ro[rn] = 0;
@@ -203,7 +227,7 @@ static void suggest(void)
 
 /* ---- drawing ----------------------------------------------------------------- */
 
-static int lastend = -1, lastpos;
+static int lastpos;
 
 static void cursorto(int pos)          /* from the end of what was just drawn */
 {
@@ -221,20 +245,58 @@ static void reset(int c)
     if (c >= 0 && *prefs_sgr(c)) term_outs("\x1b[0m");
 }
 
+/* Where the new string first differs from what was drawn: the byte (at
+ * the start of an escape sequence, never inside one), its visible column
+ * after the prompt, and the colour escape in force there (*sgr, *sgrn;
+ * none = the plain colour). */
+static int firstdiff(const char *now, int n, int *vis, const char **sgr, int *sgrn)
+{
+    int i = 0, v = 0;
+    *sgr = NULL; *sgrn = 0;
+    while (i < n) {
+        int t = i;
+        UBYTE c = now[i];
+        if (c == 0x1b || c == 0x9b) {           /* an escape: one token */
+            t++;
+            if (c == 0x1b && t < n && now[t] == '[') t++;
+            while (t < n && !((UBYTE)now[t] >= 0x40 && (UBYTE)now[t] <= 0x7e)) t++;
+            if (t < n) t++;
+        } else t++;
+        if (t > lastn || memcmp(now + i, last + i, t - i)) break;
+        if (c == 0x1b || c == 0x9b) {
+            if (t - i == 4 && !memcmp(now + i, "\x1b[0m", 4)) { *sgr = NULL; *sgrn = 0; }
+            else { *sgr = now + i; *sgrn = t - i; }
+        } else if (c >= 32 && c != 0x7f) v++;
+        i = t;
+    }
+    *vis = v;
+    return i;
+}
+
 static void draw(void)
 {
-    static char now[LINE_MAX * 2];
-    int n, endcol, W = term_cols, T, oldT = plen + drawnlen;
+    static char now[RMAX];
+    int n, endcol, W = term_cols, T;
     suggest();
     n = render(now, &endcol);
     T = plen + vislen(now);
-    if (lastvalid && !lastsug && !suglen && n >= lastn && !memcmp(now, last, lastn)
-        && lastpos == oldT && (plen + cur) == T && oldT % W && T / W == oldT / W) {
-        /* the old string is the start of the new: only the rest, in the colour it was in */
-        if (lastend >= 0) term_outs(prefs_sgr(lastend));
-        term_out(now + lastn, n - lastn);
+    if (lastvalid && (n != lastn || memcmp(now, last, n))) {
+        /* only from the first change on: the cursor there, the colour in
+         * force there, the rest, the screen cleared after it (a key while
+         * a grey suggestion shows costs a few bytes, not the whole line) */
+        const char *sgr;
+        int sgrn, v, at = firstdiff(now, n, &v, &sgr, &sgrn), pos = plen + v;
+        int row = pos / W, nowrow = lastpos / W;
+        if (nowrow > row) term_move(nowrow - row, 'A');
+        else if (row > nowrow) term_move(row - nowrow, 'B');
+        term_out("\r", 1);
+        term_move(pos % W, 'C');
+        if (sgr) term_out(sgr, sgrn);
+        term_out(now + at, n - at);
         reset(endcol);
-    } else {
+        if (T > 0 && T % W == 0) term_outs(" \b");   /* onto the next row, whichever way it wraps */
+        term_outs("\x1b[J");
+    } else if (!lastvalid) {
         term_move(currow, 'A');
         term_out("\r", 1);
         term_outs(prompt);
@@ -242,8 +304,20 @@ static void draw(void)
         reset(endcol);
         if (T > 0 && T % W == 0) term_outs(" \b");   /* onto the next row, whichever way it wraps */
         term_outs("\x1b[J");
+    } else {                                    /* the same: only the cursor moves */
+        drawnlen = T - plen;
+        if (lastpos != plen + cur) {
+            int row = (plen + cur) / W, nowrow = lastpos / W;
+            if (nowrow > row) term_move(nowrow - row, 'A');
+            else if (row > nowrow) term_move(row - nowrow, 'B');
+            term_out("\r", 1);
+            term_move((plen + cur) % W, 'C');
+            currow = row;
+            lastpos = plen + cur;
+        }
+        return;
     }
-    memcpy(last, now, n + 1); lastn = n; lastvalid = 1; lastsug = suglen != 0; lastend = endcol;
+    memcpy(last, now, n + 1); lastn = n; lastvalid = 1;
     drawnlen = T - plen;
     cursorto(plen + cur);
 }
@@ -351,8 +425,9 @@ static int search(void)
         strcat(sp, found < 0 && np ? "\" not found) " : "\") ");
         prompt = sp; plen = vislen(sp);
         navigating = 1;           /* no suggestion while searching */
+        lastvalid = 0;            /* the prompt changed: drawn whole */
         draw();
-        k = term_key();
+        k = getkey();
         if (k == (TM_CTRL | 'r')) {
             for (i = (found >= 0 ? found : at) - 1; i >= 0; i--) if (np && strstr(hist_get(i), pat)) break;
             if (i >= 0) { found = i; setline(hist_get(i)); } else term_outs("\a");
@@ -363,9 +438,11 @@ static int search(void)
         else {
             int act = keys_find(k);
             prompt = save; plen = vislen(save); navigating = 0;
+            lastvalid = 0;
             if (act == A_CANCEL) { memcpy(buf, saved, savelen + 1); len = cur = savelen; draw(); return 0; }
             if (act == A_ACCEPT) return 1;
             draw();
+            ungot = k;            /* any other key ends the search and does what it does */
             return 0;
         }
         if (found < 0 && np) {
@@ -386,36 +463,77 @@ static void finish(void)
     term_flush();
 }
 
+/* Pasted text into the line: a tab is a space, other control bytes
+ * (an escape sequence's ESC too) left out - the cursor's place is counted
+ * by characters that show. */
+static void insertpaste(const char *t, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        char c = t[i] == '\t' ? ' ' : t[i];
+        if ((UBYTE)c < 32 || c == 0x7f || (UBYTE)c == 0x9b) continue;
+        insert(&c, 1);
+    }
+}
+
+/* The rest of a paste of several lines: dropped (Ctrl-C at the prompt or
+ * in a command it ran). */
+void edit_droppaste(void)
+{
+    if (pending) FreeVec(pending);
+    pending = NULL;
+}
+
+void edit_end(void)
+{
+    edit_droppaste();
+    comp_end();
+    hist_end();
+}
+
 int edit_line(const char *p, char *line, int size)
 {
+    const char *nlp = strrchr(p, '\n');
+    if (nlp) {
+        /* a prompt of several rows (Prompt "%S*N> "): the rows before the
+         * last once, the last one is what is drawn again */
+        term_out(p, nlp + 1 - p);
+        p = nlp + 1;
+    }
     prompt = p;
     plen = vislen(p);
     len = cur = 0; buf[0] = 0;
-    navigating = 0; suglen = 0;
+    navigating = 0; suglen = 0; ungot = 0;
     fresh();
     comp_forget();
     hist_refresh();
     if (pending) {      /* the next line of a paste */
         char *nl = strchr(pending, '\n');
         int n = nl ? nl - pending : (int)strlen(pending);
-        insert(pending, n);
+        insertpaste(pending, n);
         if (nl && nl[1]) memmove(pending, nl + 1, strlen(nl + 1) + 1);
         else { FreeVec(pending); pending = NULL; }
         if (nl) { finish(); goto done; }
     }
     draw();
     for (;;) {
-        int k = term_key(), act;
+        int k = getkey(), act;
         if (k == K_PASTE) {
-            int n;
-            const char *t = term_paste(&n), *nl = memchr(t, '\n', n);
-            if (!nl) nl = memchr(t, '\r', n);
-            if (!nl) { insert(t, n); navigating = 0; draw(); continue; }
-            insert(t, nl - t);
-            if (nl + 1 < t + n && (pending = AllocVec(t + n - nl, MEMF_ANY))) {
-                memcpy(pending, nl + 1, t + n - nl - 1);
-                pending[t + n - nl - 1] = 0;
-                { char *r; while ((r = strchr(pending, '\r'))) *r = '\n'; }
+            int n, rest;
+            const char *t = term_paste(&n), *nl = memchr(t, '\n', n), *cr = memchr(t, '\r', n);
+            if (!nl || (cr && cr < nl)) nl = cr;
+            if (!nl) { insertpaste(t, n); navigating = 0; draw(); continue; }
+            insertpaste(t, nl - t);
+            if (*nl == '\r' && nl + 1 < t + n && nl[1] == '\n') nl++;     /* CR LF: one line end */
+            rest = t + n - nl - 1;
+            if (rest > 0 && (pending = AllocVec(rest + 1, MEMF_ANY))) {
+                char *o = pending;
+                const char *s;
+                for (s = nl + 1; s < t + n; s++) {
+                    if (*s == '\r') { *o++ = '\n'; if (s + 1 < t + n && s[1] == '\n') s++; }
+                    else *o++ = *s;
+                }
+                *o = 0;
             }
             finish();
             break;
@@ -468,8 +586,14 @@ int edit_line(const char *p, char *line, int size)
             break;
         case A_PREV: histmove(-1); break;
         case A_NEXT: if (navigating) histmove(1); break;
-        case A_FIRST: navigating = 0; memcpy(orig, buf, len + 1); hidx = -1; if (hist_count()) { setline(hist_get(0)); hidx = 0; navigating = 1; } break;
-        case A_LAST: navigating = 0; break;
+        case A_FIRST:       /* the oldest line; Down goes on from there */
+            if (!navigating) { memcpy(orig, buf, len + 1); origlen = len; }
+            navigating = 0;
+            if (hist_count()) { setline(hist_get(0)); hidx = 0; navigating = 1; }
+            break;
+        case A_LAST:        /* back to the line being typed */
+            if (navigating) { setline(orig); hidx = hist_count(); navigating = 0; }
+            break;
         case A_LASTARG: lastarg(); break;
         case A_SEARCH: if (search()) { finish(); goto done; } continue;
         case A_COMPLETE:
@@ -477,7 +601,8 @@ int edit_line(const char *p, char *line, int size)
             if (comp_complete(buf, &len, &cur, sizeof buf - 1) && comp_listing()) fresh();
             break;
         case A_CLEAR: term_outs("\f"); fresh(); break;
-        case A_CANCEL:      /* the line (and an unfinished command) thrown away */
+        case A_CANCEL:      /* the line (and an unfinished command, and the rest of a paste) thrown away */
+            edit_droppaste();
             suglen = 0; navigating = 1; cur = len; draw(); navigating = 0;
             term_outs("\n"); term_flush();
             return -2;

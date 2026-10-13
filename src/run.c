@@ -206,7 +206,8 @@ static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir,
     SetProgramName((STRPTR)name);
     olddir = SetProgramDir(progdir);
     cli->cli_Module = seg;
-    SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+    /* C, E and F as the ROM Shell does; a Ctrl-D stays for the script loop */
+    SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
     SetIoErr(0);
     rc = RunCommand(seg, stack, c->args, c->arglen);
     r2 = IoErr();
@@ -245,23 +246,42 @@ LONG run_internal(const char *name, const char *args, struct cmdline *redir)
     return rc;
 }
 
-/* "name" args - a path quoted for a command line */
-static void quoted(char *dst, int size, const char *path, const char *args)
+/* "name" args - a path quoted for a command line; 0 when it does not fit
+ * (said) */
+static int quoted(char *dst, int size, const char *path, const char *args)
 {
     int n = strlen(args);
     while (n && args[n - 1] == '\n') n--;
-    if ((int)strlen(path) + n + 5 > size) { dst[0] = 0; return; }
+    if ((int)strlen(path) + n + 5 > size) {
+        dst[0] = 0;
+        Printf("csh: line too long\n"); set_rc(10, 0);
+        return 0;
+    }
     dst[0] = '"'; strcpy(dst + 1, path); strcat(dst, "\"");
     if (n) { strcat(dst, " "); strncat(dst, args, n); }
+    return 1;
+}
+
+/* A script's full name from its lock (unlocked); 0 when it is too long (said). */
+static int lockname(BPTR lock, char *buf, int size)
+{
+    int ok = NameFromLock(lock, buf, size);
+    LONG e = IoErr();
+    UnLock(lock);
+    if (!ok) { PrintFault(e, "csh"); set_rc(20, e); }
+    return ok;
 }
 
 int run_capture(const char *cmd, char *buf, int size)
 {
-    char tmp[40];
+    static int k;
+    char tmp[48];
     BPTR fh, nil;
     LONG n = -1;
     strcpy(tmp, "T:csh-bq-");
-    ltoa10(csh.me->pr_TaskNum, tmp + 9);
+    csh_tag(tmp + strlen(tmp));
+    strcat(tmp, "-");
+    ltoa10(++k, tmp + strlen(tmp));
     if (!(fh = Open(tmp, MODE_NEWFILE))) return -1;
     nil = Open("NIL:", MODE_OLDFILE);
     SystemTags((STRPTR)cmd, SYS_Input, nil, SYS_Output, fh, TAG_END);
@@ -288,8 +308,11 @@ void script_end(void)
     if (cf && cf[0]) {
         char name[256];
         memcpy(name, cf + 1, cf[0]); name[cf[0]] = 0;
-        DeleteFile(name);
-        cf[0] = 0;
+        /* csh FROM x typed in an Amiga script: that script's file is its Shell's */
+        if (strcmp(name, csh.outercf)) {
+            DeleteFile(name);
+            cf[0] = 0;
+        }
     }
     cli->cli_FailLevel = 10;
 }
@@ -334,18 +357,12 @@ int run_prepare(struct cmdline *c, struct prepared *p)
     }
     if (f == F_FILE) {
         if (fib->fib_Protection & FIBF_SCRIPT) {
-            NameFromLock(lock, p->romline, sizeof p->romline - 4);
-            UnLock(lock);
-            if (lang_isscript(p->romline)) {
-                char path[256];
-                strcpy(path, p->romline);
+            char path[512];
+            if (!lockname(lock, path, sizeof path)) return 0;
+            if (lang_isscript(path)) {
                 strcpy(p->romline, "csh FROM ");
-                quoted(p->romline + 9, sizeof p->romline - 9, path, c->args);
-            } else {
-                char path[256];
-                strcpy(path, p->romline);
-                quoted(p->romline, sizeof p->romline, path, c->args);
-            }
+                if (!quoted(p->romline + 9, sizeof p->romline - 9, path, c->args)) return 0;
+            } else if (!quoted(p->romline, sizeof p->romline, path, c->args)) return 0;
             return 1;
         }
         if (!(fib->fib_Protection & FIBF_EXECUTE)) {
@@ -420,25 +437,23 @@ LONG run_cmd(struct cmdline *c, int depth)
         UnLock(lock);
         rc = run_internal("CD", path, NULL);
     } else if (f == F_FILE) {
-        static char path[256], cmd[LINE_MAX];
+        static char path[512], cmd[LINE_MAX];
         if (fib->fib_Protection & FIBF_SCRIPT) {
-            char head[2] = { 0, 0 };
-            int ischsh;
-            NameFromLock(lock, path, sizeof path);
-            UnLock(lock);
-            ischsh = lang_isscript(path);
-            if (ischsh) return lang_runscript(path, c);
-            {
+            char head[6] = { 0 };
+            if (!lockname(lock, path, sizeof path)) return 20;
+            {   /* one read tells #!csh, ARexx and an Amiga script apart */
                 BPTR fh = Open(path, MODE_OLDFILE);
-                if (fh) { Read(fh, head, 2); Close(fh); }
+                if (fh) { Read(fh, head, 6); Close(fh); }
             }
+            if (!memcmp(head, "#!csh", 5) && (head[5] == '\n' || head[5] == ' ' || head[5] == '\r' || !head[5]))
+                return lang_runscript(path, c);
             if (head[0] == '/' && head[1] == '*') {
                 strcpy(cmd, "RX ");
-                quoted(cmd + 3, sizeof cmd - 3, path, c->args);
+                if (!quoted(cmd + 3, sizeof cmd - 3, path, c->args)) return 10;
                 run_line(cmd, depth + 1);
                 return csh.rc;
             }
-            quoted(cmd, sizeof cmd, path, c->args);
+            if (!quoted(cmd, sizeof cmd, path, c->args)) return 10;
             rc = run_internal("Execute", cmd, c);
         } else {
             /* e cleared, or not a program: "file is not executable" as the ROM says */
@@ -471,10 +486,6 @@ LONG run_cmd(struct cmdline *c, int depth)
     return rc;
 }
 
-/* a | b | c in an Amiga script: each stage split by the ROM's rules, run
- * by job.c as csh's own pipes are (the earlier stages in processes of
- * their own, the last in csh). Faster than handing the line to the ROM
- * Shell, which costs a Shell more. */
 /* a | b | c in an Amiga script: each stage split by the ROM's rules and
  * found and loaded first - one missing, none runs (rc 10), as the ROM Shell
  * does - then run by job.c as csh's own pipes are (the earlier stages in
@@ -537,6 +548,7 @@ void run_line(const char *line, int depth)
     const char *l = line;
     int interactive = csh.cli->cli_CurrentInput == csh.cli->cli_StandardInput && !csh.fromfile;
     LONG rc = 0;
+    char name[64];              /* for the FailAt message: RX runs a line too (cbuf) */
 
     if (depth > 4) { Printf("csh: too deep\n"); set_rc(20, 0); return; }
     if (line_alias(l, a, sizeof a, getalias) > 0) l = a;
@@ -548,14 +560,18 @@ void run_line(const char *line, int depth)
         }
         l = a;
     }
-    if (line_parse(l, c) <= 0) return;
+    switch (line_parse(l, c)) {
+    case -1: Printf("csh: line too long\n"); set_rc(10, 0); return;
+    case 0: return;
+    }
+    strncpy(name, c->cmd, sizeof name - 1); name[sizeof name - 1] = 0;
 
     if (c->pipe) rc = amiga_pipe(l);
     else if (builtin(c)) return;
     else rc = run_cmd(c, depth);
     /* a script ends when a command fails at or over FailAt */
     if (!interactive && rc >= csh.cli->cli_FailLevel && !csh.quit) {
-        Printf("%s failed returncode %ld\n", c->cmd, (long)rc);
+        Printf("%s failed returncode %ld\n", name, (long)rc);
         script_end();
         if (csh.fromfile) csh.quit = 1;
     }

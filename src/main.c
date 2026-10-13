@@ -87,6 +87,75 @@ static void editor_start(void)
     if (keys_bad[0]) { FPuts(csh.out, keys_bad); FPutC(csh.out, '\n'); }
 }
 
+/* A line from fh into line (size bytes): 1, 0 at the end, -1 when it was
+ * longer than csh's line (the rest read and left out, said): never split
+ * into two commands. */
+static int getline_(BPTR fh, char *line, int size)
+{
+    int n;
+    if (!FGets(fh, line, size - 1)) return 0;
+    n = strlen(line);
+    if (n == size - 2 && line[n - 1] != '\n') {
+        char rest[128];
+        while (FGets(fh, rest, sizeof rest) && rest[strlen(rest) - 1] != '\n') ;
+        FPuts(csh.out, "csh: line too long (left out)\n");
+        return -1;
+    }
+    return 1;
+}
+
+/* One line of a script (cli_CurrentInput is not the console): Ctrl-D,
+ * read, echoed with Set echo on, "+" joined, run by the ROM's rules.
+ * 0 = the console's own end (Ctrl-\): csh ends. */
+static int script_step(char *line, int size)
+{
+    struct CommandLineInterface *cli = csh.cli;
+    int g;
+    if (SetSignal(0, SIGBREAKF_CTRL_D) & SIGBREAKF_CTRL_D) {
+        Printf("***Break\n");
+        script_end();
+        return 1;
+    }
+    if (!(g = getline_(cli->cli_CurrentInput, line, size))) {
+        if (cli->cli_CurrentInput != cli->cli_StandardInput) { script_end(); return 1; }
+        return 0;                                          /* Ctrl-\ on the console */
+    }
+    if (g < 0) return 1;
+    {   /* FindVar: the local list only, no copy, no ENV: file opened */
+        struct LocalVar *e = FindVar("echo", LV_VAR);
+        if (e && e->lv_Len >= 2 && (e->lv_Value[0] | 32) == 'o' && (e->lv_Value[1] | 32) == 'n')
+            FPuts(csh.out, line);
+    }
+    /* "+" at the end joins the next line, with the LF kept (line.c) */
+    for (;;) {
+        int n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
+        if (!n || line[n - 1] != '+') break;
+        if (n + 2 >= size) { FPuts(csh.out, "csh: line too long (+ lines)\n"); return 1; }
+        line[n - 1] = '\n';
+        if (!FGets(cli->cli_CurrentInput, line + n, size - n - 1)) { line[n] = 0; break; }
+    }
+    run_line(line, 0);
+    SetSignal(0, SIGBREAKF_CTRL_C);
+    return 1;
+}
+
+/* An Execute (or an Amiga script) typed in the csh language: its lines run
+ * now, before the rest of the csh line, until the input is back to until
+ * (or to the console). The ROM Shell would read them after the line. */
+LONG script_now(BPTR until)
+{
+    struct CommandLineInterface *cli = csh.cli;
+    char *line = AllocVec(LINE_MAX, MEMF_ANY);
+    if (!line) return 20;
+    while (!csh.quit && cli->cli_CurrentInput != until && cli->cli_CurrentInput != cli->cli_StandardInput) {
+        if (cli->cli_Background && !csh.bg0) break;           /* EndCLI */
+        if (!script_step(line, LINE_MAX)) break;
+    }
+    FreeVec(line);
+    return csh.rc;
+}
+
 static int smain(void)
 {
     static char line[LINE_MAX];
@@ -94,11 +163,17 @@ static int smain(void)
     struct RDArgs *rd;
     LONG arg[3] = { 0, 0, 0 };
     BPTR from = 0, oldcur;
-    LONG oldinter, bg0;
+    LONG oldinter, oldfail;
 
     (void)version;
     csh.me = (struct Process *)FindTask(NULL);
     if (!(cli = csh.cli = Cli())) return 20;
+    {   /* started inside an Amiga script: its T: file stays that script's */
+        UBYTE *cf = BADDR(cli->cli_CommandFile);
+        if (cf && cf[0]) { memcpy(csh.outercf, cf + 1, cf[0]); csh.outercf[cf[0]] = 0; }
+    }
+    oldfail = cli->cli_FailLevel;
+    csh.bg0 = cli->cli_Background;
     if (!(rd = ReadArgs("FROM,ARGS/M,COMMAND/K", arg, NULL))) { PrintFault(IoErr(), "csh"); return 20; }
     if (arg[2] || (arg[0] && lang_isscript((char *)arg[0]))) {
         /* csh COMMAND "text", or csh FROM a #!csh script [args]: run, end */
@@ -113,6 +188,8 @@ static int smain(void)
         /* the break relay and the jobs end with csh: their code is csh's (a
          * relay left behind waits in freed memory) */
         job_leave();
+        lang_end();
+        os_end();
         if (!csh.module) cli->cli_Module = 0;
         return r;
     }
@@ -125,7 +202,6 @@ static int smain(void)
     csh.module = cli->cli_Module;
     oldcur = cli->cli_CurrentInput;
     oldinter = cli->cli_Interactive;
-    bg0 = cli->cli_Background;
     if (from) { csh.fromfile = 1; cli->cli_CurrentInput = from; }
     else {
         cli->cli_CurrentInput = cli->cli_StandardInput;
@@ -136,7 +212,7 @@ static int smain(void)
         if (csh.quit) {
             /* exit with jobs running: said once; a second exit leaves them be */
             static int warned;
-            if (job_running() && !warned && editing > 0) {
+            if (job_running() && !warned && !csh.fromfile) {
                 warned = 1;
                 csh.quit = 0;
                 FPuts(csh.out, "csh: jobs still run (jobs, fg, kill); exit again to leave them\n");
@@ -145,11 +221,12 @@ static int smain(void)
             break;
         }
         int inter = !csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput;
-        if (cli->cli_Background && !bg0) break;           /* EndCLI / EndShell */
+        if (cli->cli_Background && !csh.bg0) break;       /* EndCLI / EndShell */
         if (csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput) break;
         cli->cli_Interactive = inter ? DOSTRUE : DOSFALSE;
         if (inter) {
             static int startup;
+            int g;
             if (!startup) {     /* S:CShell-Startup once, at the first prompt (aliases, prompt...) */
                 BPTR l;
                 startup = 1;
@@ -172,7 +249,8 @@ static int smain(void)
                  * around it, so they are run from there. The rest typed ahead
                  * comes through raw mode as keys. */
                 if (buffered_line(cli->cli_StandardInput)) {
-                    if (!FGets(cli->cli_StandardInput, line, sizeof line - 1)) break;
+                    if (!(g = getline_(cli->cli_StandardInput, line, sizeof line))) break;
+                    if (g < 0) continue;
                     hist_add(line);
                     lang_line(line, 1);
                     os_flush();
@@ -196,53 +274,36 @@ static int smain(void)
                 if (n == -2) { lang_reset(); continue; }
                 if (n < 0) break;
                 hist_add(line);
+                csh.broke = 0;
                 lang_line(line, 1);
                 os_flush();
+                /* Ctrl-C in what a pasted line ran: the paste's other lines not run */
+                if (csh.broke || (cli->cli_ReturnCode && cli->cli_Result2 == ERROR_BREAK)) edit_droppaste();
                 SetSignal(0, SIGBREAKF_CTRL_C);
                 continue;
             }
             FPuts(csh.out, lang_more ? "> " : prompt_text(0));
             Flush(csh.out);
-            if (!FGets(cli->cli_CurrentInput, line, sizeof line - 1)) break;
+            if (!(g = getline_(cli->cli_CurrentInput, line, sizeof line))) break;
+            if (g < 0) continue;
             lang_line(line, 1);
             os_flush();
             SetSignal(0, SIGBREAKF_CTRL_C);
             continue;
         }
-        else if (SetSignal(0, SIGBREAKF_CTRL_D) & SIGBREAKF_CTRL_D) {
-            Printf("***Break\n");
-            script_end();
-            continue;
-        }
-        if (!FGets(cli->cli_CurrentInput, line, sizeof line - 1)) {
-            if (cli->cli_CurrentInput != cli->cli_StandardInput) { script_end(); continue; }
-            break;                                         /* Ctrl-\ on the console */
-        }
-        if (!inter) {
-            /* FindVar: the local list only, no copy, no ENV: file opened */
-            struct LocalVar *e = FindVar("echo", LV_VAR);
-            if (e && e->lv_Len >= 2 && (e->lv_Value[0] | 32) == 'o' && (e->lv_Value[1] | 32) == 'n')
-                FPuts(csh.out, line);
-        }
-        /* "+" at the end joins the next line, with the LF kept (line.c) */
-        for (;;) {
-            int n = strlen(line);
-            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
-            if (!n || line[n - 1] != '+' || n + 2 >= (int)sizeof line) break;
-            line[n - 1] = '\n';
-            if (!FGets(cli->cli_CurrentInput, line + n, sizeof line - n - 1)) { line[n] = 0; break; }
-        }
-        run_line(line, 0);
-        SetSignal(0, SIGBREAKF_CTRL_C);
+        if (!script_step(line, sizeof line)) break;
     }
 
     job_leave();
     if (!csh.module) cli->cli_Module = 0;   /* jobs still run csh's code: it stays in memory */
-    if (editing > 0) { hist_save(); term_cleanup(); }
-    if (!(cli->cli_Background && !bg0)) {
+    if (editing > 0) { hist_save(); term_cleanup(); edit_end(); }
+    lang_end();
+    os_end();
+    if (!(cli->cli_Background && !csh.bg0)) {
         if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();
         cli->cli_CurrentInput = oldcur;
         cli->cli_Interactive = oldinter;
+        if (csh.fromfile) cli->cli_FailLevel = oldfail;   /* script_end set 10: the calling script's own back */
     }
     return csh.rc;
 }

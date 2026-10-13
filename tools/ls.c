@@ -36,7 +36,7 @@
 #include <proto/dos.h>
 #include <string.h>
 
-static const char version[] = "$VER: ls 0.1 (13.10.2026)";
+static const char version[] = "$VER: ls 0.2 (13.10.2026)";
 
 #ifndef FIBF_HIDDEN
 #define FIBF_HIDDEN (1 << 7)     /* the h bit: not in the NDK's dos.h */
@@ -259,9 +259,14 @@ static void loadcolours(void)
     memcpy(d, deffile, sizeof deffile);
     parsefile(d);
     if (!(t = readall("ENV:FileColours")) && !(t = readall("ENVARC:FileColours"))) {
+        /* written with the defaults; no requester on a write-protected disk */
+        struct Process *me = (struct Process *)FindTask(NULL);
+        APTR win = me->pr_WindowPtr;
         BPTR fh;
+        me->pr_WindowPtr = (APTR)-1;
         if ((fh = Open("ENVARC:FileColours", MODE_NEWFILE))) { Write(fh, (APTR)deffile, sizeof deffile - 1); Close(fh); }
         if ((fh = Open("ENV:FileColours", MODE_NEWFILE))) { Write(fh, (APTR)deffile, sizeof deffile - 1); Close(fh); }
+        me->pr_WindowPtr = win;
         return;
     }
     parsefile(t);
@@ -505,7 +510,7 @@ static void size_(LONG n, int width)
 
 static void longlist(List *l)
 {
-    int i, w = 1;
+    int i, w = 3;                /* "Dir" fits */
     for (i = 0; i < l->n; i++) {
         LONG s = l->e[i].size;
         int d = 1;
@@ -588,20 +593,32 @@ static int haswild(const char *s)
 
 static void listdir(const char *path, int header, int depth);
 
+/* Bytes of stack left: ls runs on the Shell's stack (often 4 KB), and
+ * no MMU stops it running off the end. */
+static long stackleft(void)
+{
+    char here;
+    return &here - (char *)FindTask(NULL)->tc_SPLower;
+}
+
+/* Into each drawer; the paths on the heap, a few hundred bytes of stack a
+ * level, and a stop with a word when the stack runs short. */
 static void recurse(List *l, const char *path, int depth)
 {
     int i;
-    char sub[512];
-    for (i = 0; i < l->n && !rc; i++) {
+    char *sub;
+    if (stackleft() < 1200) { flush_(); PutStr("ls: too deep for the stack (Stack 16000 helps)\n"); if (rc < 5) rc = 5; return; }
+    if (!(sub = AllocVec(512, MEMF_ANY))) return;
+    for (i = 0; i < l->n && rc < 10; i++) {
         Ent *e = &l->e[i];
         if (e->type <= 0 || e->type == ST_SOFTLINK || e->type == ST_LINKDIR) continue;
-        if (strlen(path) + strlen(e->name) + 2 > sizeof sub) continue;
+        if (strlen(path) + strlen(e->name) + 2 > 512) continue;
         strcpy(sub, path);
-        AddPart(sub, e->name, sizeof sub);
+        AddPart(sub, e->name, 512);
         put("\n", 1);
         listdir(sub, 1, depth + 1);
-        if (rc == 20) return;
     }
+    FreeVec(sub);
 }
 
 static void listdir(const char *path, int header, int depth)
@@ -614,7 +631,7 @@ static void listdir(const char *path, int header, int depth)
     if (!readdir_(lock, path, NULL, &l)) { flush_(); PrintFault(IoErr(), (STRPTR)path); if (rc < 5) rc = 5; }
     UnLock(lock);
     show(&l);
-    if (o_rec && depth < 32 && !rc) recurse(&l, path, depth);
+    if (o_rec && depth < 32 && rc < 10) recurse(&l, path, depth);   /* on past a drawer it could not read (rc 5) */
     freelist(&l);
 }
 
@@ -672,15 +689,17 @@ int main(void)
 
     /* files and patterns first, as one list; then the drawers */
     memset(&files, 0, sizeof files);
-    for (i = 0; i < nargs && !rc; i++) {
+    for (i = 0; i < nargs && rc < 10; i++) {
         BPTR lock;
         struct FileInfoBlock *fib;
-        if (haswild(args[i])) {
-            char dir[512], pat[300], parsed[620], *fp = FilePart(args[i]);
+        /* a name that is there as typed is a name, ( [ | ~ in it or not */
+        if (haswild(args[i]) && !(lock = Lock(args[i], SHARED_LOCK))) {
+            static char dir[512], pat[300], parsed[620];
+            char *fp = FilePart(args[i]);
             int k;
             BPTR dl;
             int dlen = fp - args[i];
-            if (dlen >= (int)sizeof dir) continue;
+            if (dlen >= (int)sizeof dir) { args[i] = NULL; continue; }
             memcpy(dir, args[i], dlen); dir[dlen] = 0;
             /* * as well as #? (csh hands #? on; the ROM Shell hands * as typed) */
             for (k = 0, p = fp; *p && k < (int)sizeof pat - 3; p++) {
@@ -688,14 +707,14 @@ int main(void)
             }
             pat[k] = 0;
             if (ParsePatternNoCase(pat, parsed, sizeof parsed) < 0) { PrintFault(IoErr(), args[i]); rc = 10; break; }
-            if (!(dl = Lock(dir, SHARED_LOCK))) { PrintFault(IoErr(), dir[0] ? dir : (char *)""); if (rc < 5) rc = 5; continue; }
+            if (!(dl = Lock(dir, SHARED_LOCK))) { PrintFault(IoErr(), dir[0] ? dir : (char *)""); if (rc < 5) rc = 5; args[i] = NULL; continue; }
             {
                 int before = files.n, all = o_all;
                 o_all = 1;                       /* a pattern shows what it matches */
                 readdir_(dl, dir, parsed, &files);
                 o_all = all;
                 for (k = before; k < files.n; k++) {
-                    char full[512];
+                    static char full[512];
                     if (dlen + strlen(files.e[k].name) + 1 < sizeof full) {
                         strcpy(full, dir); strcat(full, files.e[k].name);
                         files.e[k].name = keep(&files, full);
@@ -705,9 +724,10 @@ int main(void)
             }
             UnLock(dl);
             nfiles++;
+            args[i] = NULL;              /* done: not a drawer to list below */
             continue;
         }
-        if (!(lock = Lock(args[i], SHARED_LOCK))) { flush_(); PrintFault(IoErr(), args[i]); if (rc < 5) rc = 5; args[i] = NULL; continue; }
+        if (!haswild(args[i]) && !(lock = Lock(args[i], SHARED_LOCK))) { flush_(); PrintFault(IoErr(), args[i]); if (rc < 5) rc = 5; args[i] = NULL; continue; }
         if ((fib = AllocDosObject(DOS_FIB, NULL))) {
             if (Examine(lock, fib) && (fib->fib_DirEntryType < 0 || o_dir)) {
                 Ent *e = add(&files);
@@ -733,7 +753,6 @@ int main(void)
     freelist(&files);
     for (i = 0; i < nargs && rc != 20 && rc != 10; i++) {
         if (!args[i]) continue;
-        if (haswild(args[i])) continue;
         if (nfiles + ndirs > 1 || o_rec) {
             if (nfiles || i > 0) put("\n", 1);
         }

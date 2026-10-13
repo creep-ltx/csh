@@ -7,7 +7,7 @@
 #include <dos/dosextens.h>
 #include "line.h"
 
-#define CSH_VERSION "0.1b3"
+#define CSH_VERSION "0.1b4"
 #define CSH_DATE    "13.10.2026"
 
 #ifndef CMD_INTERNAL
@@ -24,6 +24,9 @@ struct csh {
     int fromfile;          /* reading FROM a file: end when it ends */
     int quit;              /* exit typed, or the CLI ended */
     LONG rc;               /* the last return code, csh's own at the end */
+    LONG bg0;              /* cli_Background when csh started (EndCLI sets it) */
+    int broke;             /* a Ctrl-C stopped csh's language since the last prompt */
+    char outercf[256];     /* the script csh was started from (its T: file is not csh's to delete) */
 };
 
 extern struct csh csh;
@@ -59,7 +62,9 @@ int lang_line(const char *line, int interactive); /* a line typed at the prompt 
 extern int lang_more;                             /* lang_line wants another line */
 int run_capture(const char *cmd, char *buf, int size);
 void script_end(void);
+LONG script_now(BPTR until);    /* main.c: an Execute's lines run now (from the csh language) */
 void set_rc(LONG rc, LONG r2);
 int ltoa10(LONG n, char *b);
+int csh_tag(char *b);           /* "<CLI number>-<this csh>": temp names no other csh shares */
 
 #endif

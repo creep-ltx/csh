@@ -152,11 +152,13 @@ static const char *wordend(const char *p)
     return p;
 }
 
-/* Copies a word into dst, the quotes around it (or in it) taken off. */
-static void unquote(char *dst, int size, const char *s, int n)
+/* Copies a word into dst, the quotes around it (or in it) taken off;
+ * 0 when it does not fit (never cut: a cut name is another file). */
+static int unquote(char *dst, int size, const char *s, int n)
 {
     int o = 0, q = 0, i;
-    for (i = 0; i < n && o < size - 1; i++) {
+    for (i = 0; i < n; i++) {
+        if (o >= size - 1) { dst[0] = 0; return 0; }
         if (s[i] == '"') { q = !q; continue; }
         if (q && s[i] == '*' && i + 1 < n) {
             char c = s[++i];
@@ -166,6 +168,7 @@ static void unquote(char *dst, int size, const char *s, int n)
         dst[o++] = s[i];
     }
     dst[o] = 0;
+    return 1;
 }
 
 int line_parse(const char *line, struct cmdline *c)
@@ -181,26 +184,29 @@ int line_parse(const char *line, struct cmdline *c)
         if (!*p || *p == '\n' || *p == ';') break;
         w = p; e = wordend(p);
         if (*w == '>' || *w == '<' || (*w == '*' && w[1] == '>')) {
+            int inout = 0;
             f = w;
             if (*f == '*') { f += 2; dst = c->err; if (*f == '>') { f++; c->err_append = 1; } }
             else if (*f == '<') {
                 f++; dst = c->in;
-                if (*f == '>') { f++; c->inout = 1; }
+                if (*f == '>') { f++; inout = 1; }
             } else { f++; dst = c->out; if (*f == '>') { f++; c->out_append = 1; } }
+            /* a later < or > of its own ends <>'s one file for both */
+            if (dst != c->err) c->inout = inout;
             if (f >= e) {                    /* "> file": the name is the next word */
                 const char *n = e;
                 while (isspc(*n)) n++;
                 if (*n && *n != '\n' && *n != ';') { f = n; e = wordend(n); }
             }
-            unquote(dst, 256, f, e - f);
-            if (c->inout) strcpy(c->out, c->in);
+            if (!unquote(dst, 256, f, e - f)) return -1;
+            if (inout) strcpy(c->out, c->in);
             skip = 1;
         } else if (e - w == 1 && *w == '|') {
             c->pipe = 1;
         }
         if (!skip) {
             if (!havecmd) {
-                unquote(c->cmd, sizeof c->cmd, w, e - w);
+                if (!unquote(c->cmd, sizeof c->cmd, w, e - w)) return -1;
                 havecmd = 1;
             } else {
                 const char *g = o ? gap : w;   /* keep the spaces between arguments */

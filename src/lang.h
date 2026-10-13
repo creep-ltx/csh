@@ -14,15 +14,20 @@
 void *os_alloc(long n);          /* cleared memory, or NULL */
 void os_free(void *p);
 int os_getvar(const char *name, char *buf, int size);      /* length, -1 = none */
-void os_setvar(const char *name, const char *val, int global);
-void os_unsetvar(const char *name);
+int os_getlocal(const char *name, char *buf, int size);    /* the local one only (not ENV:) */
+#define V_LOCAL  0              /* csh's own (an AmigaDOS local variable) */
+#define V_EXPORT 1              /* export: ENV:, the local copy that would hide it gone */
+#define V_ASSIGN 2              /* x=1: local, or ENV: when x was exported */
+void os_setvar(const char *name, const char *val, int how);
+void os_unsetvar(const char *name, int env);    /* env: an exported one goes from ENV: too */
+void os_end(void);                               /* csh ends: what os.c kept, freed */
 int os_getalias(const char *name, char *buf, int size);
 void os_setalias(const char *name, const char *val);
 long os_run(struct cmdline *c);  /* an Amiga command (searched, run); its rc */
-long os_rom(const char *line, int background);   /* a line handed to the ROM Shell */
 void os_write(const char *s, int n);             /* to the output of the moment */
 void os_flush(void);                             /* what os_write gathered, sent */
 void os_tty(const char *s, int n);               /* to csh's own console, whatever is redirected (time) */
+void os_err(const char *s, int n);               /* the error stream of the moment (2>, else the console) */
 int os_readline(char *buf, int size);            /* from the input of the moment; -1 = end */
 void *os_redir(struct cmdline *c);               /* open + select; NULL = failed (said) */
 void os_unredir(void *save);
@@ -33,12 +38,15 @@ int os_test(const char *path, int op);           /* -e -f -d -r -w -x -s */
 int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u);
 void os_setrc(long rc);
 char *os_readfile(const char *path, long *len);  /* os_alloc'ed, 0-ended */
+int os_head(const char *path, char *buf, int n); /* a file's first n bytes; how many, -1 = none */
 int os_tempfile(const char *text, int n, char *name, int size);   /* here-documents */
 void os_delete(const char *name);
 int os_cd(const char *dir);                      /* 0 = failed */
 long os_number(void);                            /* $$: the CLI number */
 void os_quit(long rc);                           /* exit at the prompt: csh ends */
 int os_interactive(void);
+long os_stackleft(void);         /* bytes of stack still free (no MMU: running off it corrupts memory) */
+#define STACK_NEEDED 6000        /* a function call, $( ), source, an alias: refused below this */
 void os_history(void);
 
 /* pipes and jobs (job.c on the Amiga). Handles are BPTRs as longs. A
@@ -69,6 +77,7 @@ int lang_parse_check(const char *text);   /* 1 complete, 0 needs more, -1 error 
 long lang_eval(const char *text);         /* runs text as csh (eval, -c, tests) */
 int lang_line(const char *line, int interactive);   /* a line typed: 0 = more lines wanted */
 void lang_reset(void);                    /* the unfinished command thrown away (Ctrl-C) */
+void lang_end(void);                      /* csh ends: functions, $1.., the pending text freed */
 extern int lang_more;
 long lang_source(const char *path, int argc, char **argv);
 void sh_print(const char *s);

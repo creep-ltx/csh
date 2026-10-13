@@ -9,7 +9,7 @@
 
 #define MAXV 200
 static struct { char *name, *val; int alias, global; } vars[MAXV];
-static int nvars;
+static int nvars, nexp;
 static char out[65536];
 static int outn;
 static int capstack[16], ncap;
@@ -23,18 +23,33 @@ void fake_reset(const char *in)
     extern int fake_h_reset(void);
     fake_h_reset();
     for (i = 0; i < nvars; i++) { free(vars[i].name); free(vars[i].val); }
-    nvars = 0; outn = 0; out[0] = 0; ncap = 0; input = in ? in : "";
+    nvars = 0; outn = 0; out[0] = 0; ncap = 0; input = in ? in : ""; nexp = 0;
     memset(fake_rcs, 0, sizeof fake_rcs);
     fake_quit = -1;
 }
 
 const char *fake_out(void) { out[outn] = 0; return out; }
 
-static int find(const char *n, int alias)
+/* alias 1: an alias; else global 0 a local variable, 1 one in ENV: (two
+ * stores, as on the Amiga: the local one is seen first) */
+static int findg(const char *n, int alias, int global)
 {
     int i;
-    for (i = 0; i < nvars; i++) if (vars[i].alias == alias && !strcasecmp(vars[i].name, n)) return i;
+    for (i = 0; i < nvars; i++)
+        if (vars[i].alias == alias && (alias || vars[i].global == global) && !strcasecmp(vars[i].name, n)) return i;
     return -1;
+}
+
+static int find(const char *n, int alias)
+{
+    int i = findg(n, alias, 0);
+    return i >= 0 || alias ? i : findg(n, 0, 1);
+}
+
+static void del(int i)
+{
+    free(vars[i].name); free(vars[i].val);
+    vars[i] = vars[--nvars];
 }
 
 void *os_alloc(long n) { return calloc(1, n); }
@@ -50,20 +65,45 @@ int os_getvar(const char *name, char *buf, int size)
 
 static void set(const char *name, const char *val, int alias, int global)
 {
-    int i = find(name, alias);
+    int i = findg(name, alias, global);
     if (i < 0) { if (nvars == MAXV) return; i = nvars++; vars[i].name = strdup(name); vars[i].val = NULL; vars[i].alias = alias; }
     free(vars[i].val);
     vars[i].val = strdup(val);
     vars[i].global = global;
 }
 
-void os_setvar(const char *name, const char *val, int global) { set(name, val, 0, global); }
-void os_unsetvar(const char *name)
+/* as os.c: export writes ENV: and drops the local copy that would hide it;
+ * x=1 of an exported name writes ENV: too, unset deletes it there */
+static char exported[16][64];
+static int isexp(const char *n) { int i; for (i = 0; i < nexp; i++) if (!strcasecmp(exported[i], n)) return i; return -1; }
+void os_setvar(const char *name, const char *val, int how)
 {
-    int i = find(name, 0);
-    if (i < 0) return;
-    free(vars[i].name); free(vars[i].val);
-    vars[i] = vars[--nvars];
+    int i;
+    if (how == V_EXPORT || (how == V_ASSIGN && isexp(name) >= 0)) {
+        set(name, val, 0, 1);
+        if ((i = findg(name, 0, 0)) >= 0) del(i);
+        if (how == V_EXPORT && isexp(name) < 0 && nexp < 16) snprintf(exported[nexp++], 64, "%s", name);
+        return;
+    }
+    set(name, val, 0, 0);
+}
+void os_end(void) { }
+int os_getlocal(const char *name, char *buf, int size)
+{
+    int i = findg(name, 0, 0);
+    if (i < 0) return -1;
+    snprintf(buf, size, "%s", vars[i].val);
+    return strlen(buf);
+}
+void os_unsetvar(const char *name, int env)
+{
+    int i = findg(name, 0, 0), k;
+    if (i >= 0) del(i);
+    if (env && (k = isexp(name)) >= 0) {
+        if ((i = findg(name, 0, 1)) >= 0) del(i);
+        memmove(exported[k], exported[k + 1], (nexp - k - 1) * sizeof exported[0]);
+        nexp--;
+    }
 }
 int os_getalias(const char *name, char *buf, int size)
 {
@@ -93,13 +133,6 @@ long os_run(struct cmdline *c)
     return fake_rcs[(unsigned char)c->cmd[0]];
 }
 
-long os_rom_(const char *line, int bg)
-{
-    char b[2048];
-    snprintf(b, sizeof b, "[ROM%s|%s]\n", bg ? " &" : "", line);
-    os_write(b, strlen(b));
-    return 0;
-}
 
 int os_readline(char *buf, int size)
 {
@@ -117,12 +150,19 @@ int os_readline(char *buf, int size)
 void *os_redir(struct cmdline *c)
 {
     char b[900];
+    /* a drawer that is not there: the open fails (said, as PrintFault does) */
+    if (!strncmp(c->in, "NOSUCH:", 7) || !strncmp(c->out, "NOSUCH:", 7) || !strncmp(c->err, "NOSUCH:", 7)) {
+        os_write("{redir failed}", 14);
+        return NULL;
+    }
     snprintf(b, sizeof b, "{redir%s%s%s%s%s%s}", c->in[0] ? " <" : "", c->in, c->out[0] ? " >" : "", c->out, c->err[0] ? " *>" : "", c->err);
     os_write(b, strlen(b));
     return (void *)1;
 }
 void os_flush(void) { }
-void os_tty(const char *s, int n) { os_write(s, n); }
+/* the console: not into a $( ) (dropped there), else shown in place */
+void os_tty(const char *s, int n) { if (!ncap) os_write(s, n); }
+void os_err(const char *s, int n) { if (!ncap) os_write(s, n); }
 void os_unredir(void *s) { (void)s; os_write("{/redir}", 8); }
 
 void *os_capture(void)
@@ -143,6 +183,7 @@ int os_captured(void *s, char **text)
 }
 
 int os_break(void) { return 0; }
+long os_stackleft(void) { return 1L << 20; }
 
 int os_test(const char *path, int op)
 {
@@ -161,7 +202,17 @@ int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u)
     return n;
 }
 
-void os_setrc(long rc) { char b[16]; snprintf(b, sizeof b, "%ld", rc); set("RC", b, 0, 0); }
+void os_setrc(long rc) { char b[24]; snprintf(b, sizeof b, "%ld", rc); set("RC", b, 0, 0); }
+
+int os_head(const char *path, char *buf, int n)
+{
+    FILE *f = fopen(path, "rb");
+    int r;
+    if (!f) return -1;
+    r = fread(buf, 1, n, f);
+    fclose(f);
+    return r;
+}
 
 char *os_readfile(const char *path, long *len)
 {
@@ -177,11 +228,13 @@ char *os_readfile(const char *path, long *len)
     return t;
 }
 
+static int hdk;
 int os_tempfile(const char *text, int n, char *name, int size)
 {
-    static int k;
+    int k = hdk;
     char b[600];
     snprintf(name, size, "T:hd%d", ++k);
+    hdk = k;
     snprintf(b, sizeof b, "{heredoc %s:%.*s}", name, n, text);
     os_write(b, strlen(b));
     return 1;
@@ -225,7 +278,7 @@ long job_list(void) { os_write("[jobs]\n", 7); return 0; }
 long job_fg(const char *s) { (void)s; os_write("[fg]\n", 5); return 0; }
 long job_kill(const char *s) { (void)s; os_write("[kill]\n", 7); return 0; }
 long job_waitall(void) { os_write("[wait]\n", 7); return 0; }
-int fake_h_reset(void) { fakeh = 10; lasttemp = 50; return 0; }
+int fake_h_reset(void) { fakeh = 10; lasttemp = 50; hdk = 0; return 0; }
 long os_lastrun(void *j, struct cmdline *c, long in)
 {
     char b[1200];

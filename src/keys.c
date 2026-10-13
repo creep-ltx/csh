@@ -16,7 +16,7 @@
 
 #define KEYFILE "ENVARC:CShell/csh.keys"
 #define KEYENV  "ENV:CShell/csh.keys"
-#define MAXB    96
+#define MAXB    192
 
 static const char *const actnames[A_COUNT] = {
     "none", "left", "right", "wordleft", "wordright", "start", "end",
@@ -110,6 +110,7 @@ static void addbind(int key, int act)
     int i;
     for (i = 0; i < nbinds; i++) if (binds[i].key == key) { binds[i].act = act; return; }
     if (nbinds < MAXB) { binds[nbinds].key = key; binds[nbinds].act = act; nbinds++; }
+    else if (!keys_bad[0]) strcpy(keys_bad, "csh.keys: too many keys (the rest left out)");
 }
 
 static void parse(char *text)
@@ -138,11 +139,25 @@ static void parse(char *text)
     }
 }
 
+/* Requesters off (a drawer or volume missing, a disk write-protected):
+ * csh's own files are never worth a requester. */
+static APTR quiet(void)
+{
+    struct Process *me = (struct Process *)FindTask(NULL);
+    APTR w = me->pr_WindowPtr;
+    me->pr_WindowPtr = (APTR)-1;
+    return w;
+}
+
+static void loud(APTR w) { ((struct Process *)FindTask(NULL))->pr_WindowPtr = w; }
+
 char *readall(const char *path, long max)
 {
+    APTR w = quiet();
     BPTR fh = Open((STRPTR)path, MODE_OLDFILE);
     char *t;
     long n;
+    loud(w);
     if (!fh) return NULL;
     Seek(fh, 0, OFFSET_END);
     n = Seek(fh, 0, OFFSET_BEGINNING);
@@ -156,10 +171,12 @@ char *readall(const char *path, long max)
 /* Writes text to path, making the drawer first. */
 void writeall(const char *dir, const char *path, const char *text, long n)
 {
+    APTR w = quiet();
     BPTR l = Lock((STRPTR)dir, SHARED_LOCK), fh;
     if (!l) l = CreateDir((STRPTR)dir);
     if (l) UnLock(l);
     if ((fh = Open((STRPTR)path, MODE_NEWFILE))) { Write(fh, (APTR)text, n); Close(fh); }
+    loud(w);
 }
 
 void keys_load(void)

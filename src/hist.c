@@ -61,12 +61,14 @@ static LONG filesize(const char *path)
     return n;
 }
 
-/* Reads the file: only its last prefs_history lines are kept. */
-static void readfile(const char *path)
+/* Reads the file: only its last prefs_history lines are kept. An empty
+ * file (another tab is writing it anew this moment) changes nothing: 0. */
+static int readfile(const char *path)
 {
     char *t = readall(path, 1024L * 1024), *p, *e, *start;
     int nl = 0;
-    if (!t) return;
+    if (!t) return 0;
+    if (!*t && count) { FreeVec(t); return 0; }
     clear();
     /* skip to where the last cap lines begin: no copying of lines dropped */
     for (p = t + strlen(t); p > t; p--) if (p[-1] == '\n' && p[0] && ++nl > prefs_history) break;
@@ -78,6 +80,7 @@ static void readfile(const char *path)
         if (*e) e++;
     }
     FreeVec(t);
+    return 1;
 }
 
 static void writeout(const char *dir, const char *path)
@@ -106,28 +109,59 @@ void hist_load(void)
 void hist_refresh(void)
 {
     LONG n = filesize(HISTENV);
-    if (n >= 0 && n != envsize) {
-        readfile(HISTENV);
-        envsize = n;
+    if (n >= 0 && n != envsize && readfile(HISTENV)) envsize = n;
+}
+
+/* ENV:CShell/history held by one tab at a time (an exclusive lock, others
+ * wait a moment): two tabs appending at once would write over each other. */
+static BPTR histopen(void)
+{
+    BPTR l = 0, fh;
+    int k;
+    for (k = 0; k < 25 && !(l = Lock(HISTENV, EXCLUSIVE_LOCK)); k++) {
+        if (IoErr() != ERROR_OBJECT_IN_USE) break;
+        Delay(1);
     }
+    if (!l) return 0;
+    if (!(fh = OpenFromLock(l))) UnLock(l);
+    return fh;
 }
 
 void hist_add(const char *line)
 {
     int n = strlen(line);
     BPTR fh;
+    char *t;
     while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
     if (!n || line[0] == ' ') return;        /* a line starting with a space stays private */
     if (count && (int)strlen(lines[count - 1]) == n && !memcmp(lines[count - 1], line, n)) return;
     push(line, n);
-    if ((fh = Open(HISTENV, MODE_READWRITE))) {
+    if ((fh = histopen())) {
+        LONG end;
         Seek(fh, 0, OFFSET_END);
-        Write(fh, (APTR)line, n);
-        Write(fh, "\n", 1);
-        envsize = Seek(fh, 0, OFFSET_CURRENT);
+        end = Seek(fh, 0, OFFSET_CURRENT);
+        /* the line and its LF in one Write */
+        if ((t = AllocVec(n + 1, MEMF_ANY))) {
+            memcpy(t, line, n); t[n] = '\n';
+            Write(fh, t, n + 1);
+            FreeVec(t);
+        }
+        /* another tab wrote since this one last read: read it all again at
+         * the next prompt (its lines too), else this size is known */
+        envsize = end == envsize ? Seek(fh, 0, OFFSET_CURRENT) : -1;
         Close(fh);
-        /* the file grows: past twice the kept lines it is written short again */
-        if (envsize > (LONG)prefs_history * 160) { writeout("ENV:CShell", HISTENV); envsize = filesize(HISTENV); }
+        /* the file grows: past the kept lines it is written short again,
+         * from what is in it now (every tab's lines), not from memory */
+        if (envsize > (LONG)prefs_history * 160 || envsize < 0) {
+            LONG sz = filesize(HISTENV);
+            if (sz > (LONG)prefs_history * 160 && readfile(HISTENV)) {
+                writeout("ENV:CShell", HISTENV);
+                envsize = filesize(HISTENV);
+            }
+        }
+    } else if (filesize(HISTENV) < 0) {
+        writeout("ENV:CShell", HISTENV);     /* ENV: emptied meanwhile: made again */
+        envsize = filesize(HISTENV);
     }
     if (++sincesave >= 20) hist_save();
 }
@@ -137,6 +171,14 @@ void hist_save(void)
     if (!count) return;
     writeout("ENVARC:CShell", HISTENVARC);
     sincesave = 0;
+}
+
+void hist_end(void)
+{
+    clear();
+    if (lines) FreeVec(lines);
+    lines = NULL;
+    cap = 0;
 }
 
 int hist_count(void) { return count; }

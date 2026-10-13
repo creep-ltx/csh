@@ -23,7 +23,7 @@ enum {
 #define K_BASE(k) ((k) & ~TM_MASK)
 
 /* term.c */
-extern int term_cols, term_cterm;
+extern int term_cols, term_cterm, term_col0;
 int term_possible(BPTR in, BPTR out);
 int term_open(BPTR in, BPTR out);
 void term_close(void);
@@ -64,15 +64,19 @@ int hist_count(void);
 const char *hist_get(int i);        /* 0 = the oldest */
 void hist_refresh(void);            /* lines other csh tabs added meanwhile */
 void hist_print(BPTR out);
+void hist_end(void);                /* csh ends: the lines freed */
 
 /* comp.c */
 enum { W_NONE, W_COMMAND, W_BUILTIN, W_UNKNOWN };
-int comp_kind(const char *word, int n);   /* what a command word is, for its colour */
+int comp_kind(const char *word, int n, int cheap);   /* what a command word is, for its colour; cheap: no disk */
+void comp_end(void);                /* csh ends: the tables freed, C:'s locks given back */
 int comp_complete(char *line, int *len, int *cur, int max);   /* Tab; TRUE if it changed */
 void comp_forget(void);             /* the command table is built again when next needed */
 int comp_listing(void);             /* a list was shown under the line */
 
 /* edit.c */
 int edit_line(const char *prompt, char *line, int size);   /* -1 = end (Ctrl-\), -2 = Ctrl-C */
+void edit_droppaste(void);          /* the rest of a multi-line paste dropped (Ctrl-C) */
+void edit_end(void);                /* csh ends: the prompt's memory freed */
 
 #endif

@@ -49,33 +49,63 @@ static int num(const char *s, long *v)
     int neg = 0, any = 0;
     while (*s == ' ' || *s == '\t') s++;
     if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
-    while (*s >= '0' && *s <= '9') { n = n * 10 + *s++ - '0'; any = 1; }
+    while (*s >= '0' && *s <= '9') {
+        if (n > 214748363L) return 0;          /* past a 32-bit number */
+        n = n * 10 + *s++ - '0'; any = 1;
+    }
     while (*s == ' ' || *s == '\t') s++;
     if (!any || *s) return 0;
     *v = neg ? -n : n;
     return 1;
 }
 
-/* \n \t \\ \e \a \r \0nnn \c (stop) */
-static int escapes(const char *s, int stopc)
+/* One escape, s just after the backslash: its character in *c and how many
+ * characters it took; 0 = not an escape (the \ stays), -1 = \c (stop).
+ * octal0: echo -e's and %b's \0nnn; else printf's own \nnn. */
+static int esc1(const char *s, char *c, int octal0)
+{
+    int k, v = 0;
+    switch (*s) {
+    case 'n': *c = '\n'; return 1;
+    case 't': *c = '\t'; return 1;
+    case 'r': *c = '\r'; return 1;
+    case 'a': *c = 7; return 1;
+    case 'b': *c = 8; return 1;
+    case 'f': *c = 12; return 1;
+    case 'v': *c = 11; return 1;
+    case 'e': case 'E': *c = 27; return 1;
+    case '\\': *c = '\\'; return 1;
+    case 'c': return -1;
+    }
+    if (octal0 ? *s == '0' : (*s >= '0' && *s <= '7')) {
+        const char *p = octal0 ? s + 1 : s;
+        for (k = 0; k < 3 && p[k] >= '0' && p[k] <= '7'; k++) v = v * 8 + p[k] - '0';
+        *c = v;
+        return (p - s) + k;
+    }
+    if (*s == 'x') {
+        for (k = 1; k < 3; k++) {
+            int d = s[k] >= '0' && s[k] <= '9' ? s[k] - '0' : (s[k] | 32) >= 'a' && (s[k] | 32) <= 'f' ? (s[k] | 32) - 'a' + 10 : -1;
+            if (d < 0) break;
+            v = v * 16 + d;
+        }
+        if (k == 1) return 0;
+        *c = v;
+        return k;
+    }
+    return 0;
+}
+
+/* A string with escapes, printed; 1 when a \c stopped it. */
+static int escapes(const char *s, int octal0)
 {
     char b[256];
-    int o = 0;
+    int o = 0, k;
     for (; *s; s++) {
         char c = *s;
         if (c == '\\' && s[1]) {
-            s++;
-            switch (*s) {
-            case 'n': c = '\n'; break;
-            case 't': c = '\t'; break;
-            case 'r': c = '\r'; break;
-            case 'a': c = 7; break;
-            case 'e': case 'E': c = 27; break;
-            case '\\': c = '\\'; break;
-            case 'c': if (stopc) { if (o) sh_printn(b, o); return 1; } c = 'c'; break;
-            case '0': { int v = 0, k; for (k = 0; k < 3 && s[1] >= '0' && s[1] <= '7'; k++) v = v * 8 + *++s - '0'; c = v; break; }
-            default: if (o) sh_printn(b, o); o = 0; b[o++] = '\\'; c = *s; break;
-            }
+            if ((k = esc1(s + 1, &c, octal0)) < 0) { if (o) sh_printn(b, o); return 1; }
+            if (k) s += k; else c = '\\';
         }
         b[o++] = c;
         if (o == (int)sizeof b) { sh_printn(b, o); o = 0; }
@@ -84,13 +114,28 @@ static int escapes(const char *s, int stopc)
     return 0;
 }
 
-static long b_echo(int argc, char **argv)
+/* echo with NOLINE, FIRST n, LEN n or TO file is the Amiga's Echo: its
+ * keywords where its template would take them (NOLINE any case; TO in
+ * capitals, so "echo I want to go" stays csh's). */
+static int amigaecho(int argc, char **argv)
 {
-    int i = 1, nl = 1, esc = 0, k;
+    int k;
+    if (argc > 1 && argv[1][0] == '-' && argv[1][1]) return 0;     /* echo -n ...: bash's */
     for (k = 1; k < argc; k++) {
         const char *a = argv[k];
-        if (ieq(a, "NOLINE") || ieq(a, "FIRST") || ieq(a, "LEN") || ieq(a, "TO")) return NOTMINE;
+        long v;
+        if (ieq(a, "NOLINE")) return 1;
+        if ((ieq(a, "FIRST") || ieq(a, "LEN")) && k + 1 < argc && num(argv[k + 1], &v)) return 1;
+        if (!strcmp(a, "TO") && k + 1 < argc) return 1;
+        if (!strncmp(a, "TO=", 3) || !strncmp(a, "FIRST=", 6) || !strncmp(a, "LEN=", 4)) return 1;
     }
+    return 0;
+}
+
+static long b_echo(int argc, char **argv)
+{
+    int i = 1, nl = 1, esc = 0;
+    if (amigaecho(argc, argv)) return NOTMINE;
     while (i < argc && argv[i][0] == '-' && argv[i][1]) {
         const char *o = argv[i] + 1;
         int ok = 1, n2 = nl, e2 = esc;
@@ -107,74 +152,95 @@ static long b_echo(int argc, char **argv)
     return 0;
 }
 
+static void pad(int n, int zero) { while (n-- > 0) sh_print(zero ? "0" : " "); }
+
+/* printf FORMAT [ARGS]: %s %b %c %d %i %u %x %X %o %%, flags - 0, width,
+ * .precision; the format again while arguments are left. */
 static long b_printf(int argc, char **argv)
 {
     const char *f;
     int a = 2;
+    long rc = 0;
     if (argc < 2) { sh_error("printf:", "a format is needed"); return 10; }
     do {
         int used = 0;
         for (f = argv[1]; *f; f++) {
-            char spec[16], out[300];
-            int sl = 0;
             if (*f == '\\') {
-                char t[3] = { '\\', f[1], 0 };
+                char c;
+                int k;
                 if (!f[1]) { sh_print("\\"); break; }
-                escapes(t, 0); f++;
+                if ((k = esc1(f + 1, &c, 0)) < 0) return rc;
+                if (!k) { sh_print("\\"); continue; }
+                sh_printn(&c, 1); f += k;
                 continue;
             }
             if (*f != '%') { sh_printn(f, 1); continue; }
             if (f[1] == '%') { sh_print("%"); f++; continue; }
-            spec[sl++] = '%';
-            for (f++; *f && strchr("-+ 0#", *f) && sl < 6; f++) spec[sl++] = *f;
-            for (; *f >= '0' && *f <= '9' && sl < 10; f++) spec[sl++] = *f;
-            if (*f == '.') { spec[sl++] = *f++; for (; *f >= '0' && *f <= '9' && sl < 13; f++) spec[sl++] = *f; }
-            if (!*f) break;
-            spec[sl] = 0;
             {
-                const char *arg = a < argc ? argv[a] : "";
-                char conv = *f;
-                int w = 0, left = 0, zero = 0, prec = -1, k, l;
-                const char *p = spec + 1;
+                const char *arg;
+                char conv, out[48];
+                int w = 0, left = 0, zero = 0, prec = -1, l = 0;
+                for (f++; *f && strchr("-+ 0#", *f); f++) { if (*f == '-') left = 1; if (*f == '0') zero = 1; }
+                for (; *f >= '0' && *f <= '9'; f++) if (w < 1000) w = w * 10 + *f - '0';
+                if (*f == '.') { prec = 0; for (f++; *f >= '0' && *f <= '9'; f++) if (prec < 1000) prec = prec * 10 + *f - '0'; }
+                if (!*f) break;
+                conv = *f;
+                arg = a < argc ? argv[a] : "";
                 if (a < argc) used = 1;
                 a++;
-                for (; *p == '-' || *p == '0' || *p == '+' || *p == ' ' || *p == '#'; p++) { if (*p == '-') left = 1; if (*p == '0') zero = 1; }
-                while (*p >= '0' && *p <= '9') w = w * 10 + *p++ - '0';
-                if (*p == '.') { prec = 0; p++; while (*p >= '0' && *p <= '9') prec = prec * 10 + *p++ - '0'; }
-                l = 0;
-                if (conv == 's') {
+                if (conv == 's' || conv == 'b') {
                     l = strlen(arg);
-                    if (prec >= 0 && l > prec) l = prec;
-                    if (l > 256) l = 256;
-                    memcpy(out, arg, l);
-                } else if (conv == 'c') {
-                    out[0] = arg[0]; l = arg[0] ? 1 : 0;
-                } else if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'x' || conv == 'X' || conv == 'o') {
+                    if (conv == 's' && prec >= 0 && l > prec) l = prec;
+                    if (!left) pad(w - l, 0);
+                    if (conv == 's') sh_printn(arg, l);
+                    else if (escapes(arg, 1)) return rc;
+                    if (left) pad(w - l, 0);
+                    continue;
+                }
+                if (conv == 'c') {
+                    l = arg[0] ? 1 : 0;
+                    if (!left) pad(w - l, 0);
+                    sh_printn(arg, l);
+                    if (left) pad(w - l, 0);
+                    continue;
+                }
+                if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'x' || conv == 'X' || conv == 'o') {
                     long v = 0;
                     unsigned long u;
-                    int base = conv == 'x' || conv == 'X' ? 16 : conv == 'o' ? 8 : 10, neg = 0;
+                    int base = conv == 'x' || conv == 'X' ? 16 : conv == 'o' ? 8 : 10, neg = 0, tl = 0;
                     char t[24];
-                    int tl = 0;
                     if (*arg && !num(arg, &v)) {
                         if (arg[0] == '\'' || arg[0] == '"') v = (unsigned char)arg[1];
-                        else { sh_error("printf: not a number:", arg); }
+                        else { sh_error("printf: not a number:", arg); rc = 10; }
                     }
                     if ((conv == 'd' || conv == 'i') && v < 0) { neg = 1; u = -(unsigned long)v; } else u = (unsigned long)v;
                     do { int d = u % base; t[tl++] = d < 10 ? '0' + d : (conv == 'X' ? 'A' : 'a') + d - 10; u /= base; } while (u);
                     if (neg) out[l++] = '-';
-                    while (prec > tl) { out[l++] = '0'; prec--; }
+                    /* a precision's zeros: printed, not put in out (%.500d) */
+                    if (prec > tl) {          /* the sign, then prec digits; 0 flag ignored, as in C */
+                        if (!left) pad(w - (l + prec), 0);
+                        sh_printn(out, l);
+                        pad(prec - tl, 1);
+                        while (tl) { char ch = t[--tl]; sh_printn(&ch, 1); }
+                        if (left) pad(w - (l + prec), 0);
+                        continue;
+                    }
                     while (tl) out[l++] = t[--tl];
-                } else { sh_error("printf: unknown conversion in", argv[1]); return 10; }
-                if (!left && w > l) {
-                    for (k = 0; k < w - l; k++) sh_print(zero && conv != 's' && conv != 'c' ? "0" : " ");
+                    if (!left && w > l) {
+                        if (zero && neg) { sh_print("-"); pad(w - l, 1); sh_printn(out + 1, l - 1); continue; }
+                        pad(w - l, zero);
+                    }
+                    sh_printn(out, l);
+                    if (left) pad(w - l, 0);
+                    continue;
                 }
-                sh_printn(out, l);
-                if (left && w > l) for (k = 0; k < w - l; k++) sh_print(" ");
+                sh_error("printf: unknown conversion in", argv[1]);
+                return 10;
             }
         }
         if (!used) break;
     } while (a < argc);
-    return 0;
+    return rc;
 }
 
 /* ---- test / [ ---- */
@@ -184,11 +250,21 @@ static int tn, ti, terr;
 
 static int t_or(void);
 
+static int isbinop(const char *op)
+{
+    static const char *const ops[] = { "=", "==", "!=", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", NULL };
+    int i;
+    for (i = 0; ops[i]; i++) if (!strcmp(op, ops[i])) return 1;
+    return 0;
+}
+
 static int t_prim(void)
 {
     const char *a;
     if (ti >= tn) { terr = 1; return 0; }
     a = tv[ti];
+    /* a OP b first, as POSIX reads three words: [ "(" = "(" ], [ "!" = "$x" ] */
+    if (ti + 2 < tn && isbinop(tv[ti + 1]) && (strcmp(a, "(") || ti + 3 >= tn || strcmp(tv[ti + 3], ")"))) goto binary;
     if (!strcmp(a, "!")) { ti++; return !t_prim(); }
     if (!strcmp(a, "(") ) {
         int v;
@@ -197,7 +273,7 @@ static int t_prim(void)
         if (ti < tn && !strcmp(tv[ti], ")")) ti++; else terr = 1;
         return v;
     }
-    /* binary: a OP b */
+binary:
     if (ti + 2 < tn) {
         const char *op = tv[ti + 1], *b = tv[ti + 2];
         long x, y;
@@ -263,30 +339,37 @@ static long b_read(int argc, char **argv)
 {
     char line[LINE_MAX], *p;
     int i = 1, raw = 0, n, v;
-    while (i < argc && argv[i][0] == '-') {
+    while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+        if (!strcmp(argv[i], "--")) { i++; break; }
         if (!strcmp(argv[i], "-r")) raw = 1;
         else if (!strcmp(argv[i], "-p") && i + 1 < argc) sh_print(argv[++i]);
-        else break;
+        else { sh_error("read: unknown option", argv[i]); return 10; }
         i++;
     }
     n = os_readline(line, sizeof line);
     if (n < 0) return SH_FALSE;
+    if (n == (int)sizeof line - 1 && line[n - 1] != '\n') {
+        /* longer than csh's line: the rest is read and left out (not the next read's) */
+        char rest[256];
+        int k;
+        while ((k = os_readline(rest, sizeof rest)) > 0 && rest[k - 1] != '\n') ;
+    }
     while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
     if (!raw) {                         /* \x is x */
         char *d = line, *s = line;
         for (; *s; s++) { if (*s == '\\' && s[1]) s++; *d++ = *s; }
         *d = 0;
     }
-    if (i >= argc) { os_setvar("REPLY", line, 0); return 0; }
+    if (i >= argc) { os_setvar("REPLY", line, V_ASSIGN); return 0; }
     p = line;
     for (v = i; v < argc; v++) {
         char *start, save;
         while (*p == ' ' || *p == '\t') p++;
         start = p;
-        if (v == argc - 1) { char *e = p + strlen(p); while (e > p && (e[-1] == ' ' || e[-1] == '\t')) e--; save = *e; *e = 0; os_setvar(argv[v], start, 0); *e = save; break; }
+        if (v == argc - 1) { char *e = p + strlen(p); while (e > p && (e[-1] == ' ' || e[-1] == '\t')) e--; save = *e; *e = 0; os_setvar(argv[v], start, V_ASSIGN); *e = save; break; }
         while (*p && *p != ' ' && *p != '\t') p++;
         save = *p; *p = 0;
-        os_setvar(argv[v], start, 0);
+        os_setvar(argv[v], start, V_ASSIGN);
         *p = save;
     }
     return 0;
@@ -334,7 +417,7 @@ long builtin_run(int which, int argc, char **argv)
         return n;
     case B_RETURN:
         n = sh_rc();
-        if (argc > 1 && !num(argv[1], &n)) n = 10;
+        if (argc > 1 && !num(argv[1], &n)) { sh_error("return: not a number:", argv[1]); n = 10; }
         sh_return = 1;
         return n;
     case B_BREAK: case B_CONTINUE:
@@ -344,15 +427,14 @@ long builtin_run(int which, int argc, char **argv)
             return 10;
         }
         n = 1;
-        if (argc > 1 && (!num(argv[1], &n) || n < 1)) n = 1;
+        if (argc > 1 && (!num(argv[1], &n) || n < 1)) { sh_error(which == B_BREAK ? "break: not a count:" : "continue: not a count:", argv[1]); return 10; }
         if (n > sh_loops) n = sh_loops;
         if (which == B_BREAK) sh_break = n; else sh_continue = n;
         return 0;
     case B_SHIFT: {
-        char *v[1];
         int k = sh_npos();
         n = 1;
-        if (argc > 1 && !num(argv[1], &n)) n = 1;
+        if (argc > 1 && (!num(argv[1], &n) || n < 0)) { sh_error("shift: not a count:", argv[1]); return 10; }
         if (n > k) return SH_FALSE;
         {
             char **all = os_alloc((k + 1) * sizeof *all);
@@ -362,7 +444,6 @@ long builtin_run(int which, int argc, char **argv)
             sh_setpos(k - n, all + n);
             os_free(all);
         }
-        (void)v;
         return 0;
     }
     case B_TRUE: case B_COLON: return 0;
@@ -373,7 +454,7 @@ long builtin_run(int which, int argc, char **argv)
     case B_BRACKET: return b_test(argc, argv, 1);
     case B_READ: return b_read(argc, argv);
     case B_SOURCE: case B_DOT:
-        if (argc < 2) { sh_error(argv[0], "needs a file"); return 10; }
+        if (argc < 2) { sh_error("source:", "a file is needed"); return 10; }
         return lang_source(argv[1], argc - 2, argv + 2);
     case B_EVAL: {
         char *t = joined(argc - 1, argv + 1);
@@ -386,17 +467,18 @@ long builtin_run(int which, int argc, char **argv)
         int i;
         for (i = 1; i < argc; i++) {
             char *eq = strchr(argv[i], '=');
-            if (eq) { *eq = 0; os_setvar(argv[i], eq + 1, 1); *eq = '='; }
+            if (eq) { *eq = 0; os_setvar(argv[i], eq + 1, V_EXPORT); *eq = '='; }
             else {
                 char v[LINE_MAX];
-                if (os_getvar(argv[i], v, sizeof v) >= 0) os_setvar(argv[i], v, 1);
+                int l = os_getvar(argv[i], v, sizeof v);
+                if (l >= 0) { v[l < (int)sizeof v ? l : (int)sizeof v - 1] = 0; os_setvar(argv[i], v, V_EXPORT); }
             }
         }
         return 0;
     }
     case B_UNSET: {
         int i;
-        for (i = 1; i < argc; i++) os_unsetvar(argv[i]);
+        for (i = 1; i < argc; i++) os_unsetvar(argv[i], 1);
         return 0;
     }
     case B_SET: {
@@ -420,15 +502,15 @@ long builtin_run(int which, int argc, char **argv)
         {
             char *v = joined(argc - 2, argv + 2);
             if (!v) return 20;
-            os_setvar(argv[1], v, 0);
+            os_setvar(argv[1], v, V_ASSIGN);
             os_free(v);
         }
         return 0;
     }
     case B_ALIAS: {
-        int i, any = 0;
-        for (i = 1; i < argc; i++) if (strchr(argv[i], '=')) any = 1;
-        if (!any) return NOTMINE;                /* the ROM's Alias */
+        int i;
+        /* alias name=text is csh's; alias name text (an = in the text or not) the ROM's */
+        if (argc < 2 || !strchr(argv[1], '=')) return NOTMINE;
         for (i = 1; i < argc; i++) {
             char *eq = strchr(argv[i], '=');
             if (!eq) continue;

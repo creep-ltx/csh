@@ -43,6 +43,15 @@ void os_tty(const char *s, int n)
     Write(csh.out, (APTR)s, n);
 }
 
+/* csh's own errors (and set -x): where 2> points, else the console csh
+ * runs in - never into a pipe, a file of > or a $( ) */
+void os_err(const char *s, int n)
+{
+    BPTR f = csh.me->pr_CES ? csh.me->pr_CES : csh.out;
+    os_flush();
+    Write(f, (APTR)s, n);
+}
+
 void *os_alloc(long n) { return AllocVec(n, MEMF_ANY | MEMF_CLEAR); }
 void os_free(void *p) { if (p) FreeVec(p); }
 
@@ -58,12 +67,66 @@ int os_getvar(const char *name, char *buf, int size)
     return n < 0 ? -1 : n;
 }
 
-void os_setvar(const char *name, const char *val, int global)
+int os_getlocal(const char *name, char *buf, int size)
 {
-    SetVar((STRPTR)name, (STRPTR)val, -1, global ? GVF_GLOBAL_ONLY : (LV_VAR | GVF_LOCAL_ONLY));
+    LONG n = GetVar((STRPTR)name, buf, size, GVF_LOCAL_ONLY | GVF_BINARY_VAR);
+    return n < 0 ? -1 : n;
 }
 
-void os_unsetvar(const char *name) { DeleteVar((STRPTR)name, LV_VAR | GVF_LOCAL_ONLY); }
+/* The names this csh exported: x=1 later writes ENV: too, unset deletes
+ * them there. A local copy would hide ENV:'s (GetVar looks there first),
+ * so an exported name has none. */
+struct expname { struct expname *next; char name[1]; };
+static struct expname *exported;
+
+static int ieq(const char *a, const char *b)       /* variable names: any case */
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a, y = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b;
+        if (x != y) return 0;
+    }
+    return !*a && !*b;
+}
+
+static struct expname **expfind(const char *name)
+{
+    struct expname **p;
+    for (p = &exported; *p; p = &(*p)->next) if (ieq((*p)->name, name)) return p;
+    return NULL;
+}
+
+void os_setvar(const char *name, const char *val, int how)
+{
+    if (how == V_EXPORT || (how == V_ASSIGN && expfind(name))) {
+        SetVar((STRPTR)name, (STRPTR)val, -1, GVF_GLOBAL_ONLY);
+        DeleteVar((STRPTR)name, LV_VAR | GVF_LOCAL_ONLY);
+        if (how == V_EXPORT && !expfind(name)) {
+            struct expname *e = AllocVec(sizeof *e + strlen(name), MEMF_ANY);
+            if (e) { strcpy(e->name, name); e->next = exported; exported = e; }
+        }
+        return;
+    }
+    SetVar((STRPTR)name, (STRPTR)val, -1, LV_VAR | GVF_LOCAL_ONLY);
+}
+
+void os_unsetvar(const char *name, int env)
+{
+    struct expname **p;
+    DeleteVar((STRPTR)name, LV_VAR | GVF_LOCAL_ONLY);
+    if (env && (p = expfind(name))) {
+        struct expname *e = *p;
+        DeleteVar((STRPTR)name, GVF_GLOBAL_ONLY);
+        *p = e->next;
+        FreeVec(e);
+    }
+}
+
+void os_end(void)
+{
+    struct expname *e, *n;
+    for (e = exported; e; e = n) { n = e->next; FreeVec(e); }
+    exported = NULL;
+}
 
 int os_getalias(const char *name, char *buf, int size)
 {
@@ -80,19 +143,16 @@ void os_setrc(long rc) { set_rc(rc, rc ? csh.cli->cli_Result2 : 0); }
 
 /* ---- commands ---- */
 
+/* An Amiga command from the csh language. An Execute (or an Amiga script,
+ * which is one) only points cli_CurrentInput at its lines; they run here,
+ * now, so "myscript && echo ok" and $(myscript) work in order. */
 long os_run(struct cmdline *c)
 {
+    BPTR before = csh.cli->cli_CurrentInput;
+    long rc;
     os_flush();
-    return run_cmd(c, 0);
-}
-
-long os_rom(const char *line, int background)
-{
-    LONG rc;
-    os_flush();
-    if (background) return run_internal("Run", line, NULL);   /* the ROM's Run: [CLI n] */
-    rc = SystemTags((STRPTR)line, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
-    set_rc(rc, IoErr());
+    rc = run_cmd(c, 0);
+    if (csh.cli->cli_CurrentInput != before) rc = script_now(before);
     return rc;
 }
 
@@ -162,7 +222,7 @@ void *os_capture(void)
     if (!c) return NULL;
     os_flush();
     strcpy(c->name, "T:csh-cap-");
-    ltoa10(csh.me->pr_TaskNum, c->name + strlen(c->name));
+    csh_tag(c->name + strlen(c->name));
     strcat(c->name, "-");
     ltoa10(++capdepth, c->name + strlen(c->name));
     if (!(c->fh = Open(c->name, MODE_NEWFILE))) { capdepth--; FreeVec(c); return NULL; }
@@ -190,7 +250,9 @@ int os_captured(void *p, char **text)
 
 int os_break(void)
 {
-    return (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) != 0;
+    if (!(SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C)) return 0;
+    csh.broke = 1;
+    return 1;
 }
 
 /* ---- files ---- */
@@ -201,6 +263,7 @@ int os_test(const char *path, int op)
     APTR win = csh.me->pr_WindowPtr;
     BPTR l;
     int r = 0;
+    if (!*path) return 0;        /* Lock("") is the current dir: [ -d "$UNSET" ] must be false */
     csh.me->pr_WindowPtr = (APTR)-1;
     l = Lock((STRPTR)path, SHARED_LOCK);
     csh.me->pr_WindowPtr = win;
@@ -262,6 +325,20 @@ int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u)
     return n;
 }
 
+int os_head(const char *path, char *buf, int n)
+{
+    APTR win = csh.me->pr_WindowPtr;
+    BPTR fh;
+    LONG r;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    fh = Open((STRPTR)path, MODE_OLDFILE);
+    csh.me->pr_WindowPtr = win;
+    if (!fh) return -1;
+    r = Read(fh, buf, n);
+    Close(fh);
+    return r < 0 ? -1 : r;
+}
+
 char *os_readfile(const char *path, long *len)
 {
     char *t = readall(path, 4L * 1024 * 1024);
@@ -275,11 +352,11 @@ int os_tempfile(const char *text, int n, char *name, int size)
     BPTR fh;
     if (size < 40) return 0;
     strcpy(name, "T:csh-hd-");
-    ltoa10(csh.me->pr_TaskNum, name + strlen(name));
+    csh_tag(name + strlen(name));
     strcat(name, "-");
     ltoa10(++k, name + strlen(name));
     if (!(fh = Open(name, MODE_NEWFILE))) return 0;
-    Write(fh, (APTR)text, n);
+    if (Write(fh, (APTR)text, n) != n) { Close(fh); DeleteFile(name); return 0; }   /* T: full */
     Close(fh);
     return 1;
 }
@@ -288,14 +365,39 @@ void os_delete(const char *name) { DeleteFile((STRPTR)name); }
 
 int os_cd(const char *dir)
 {
-    char b[300];
-    strcpy(b, "\"");
-    strncat(b, dir, 290);
-    strcat(b, "\"");
+    char b[600];
+    int o = 0;
+    b[o++] = '"';
+    for (; *dir && o < (int)sizeof b - 4; dir++) {   /* the Amiga's quoting: *" and ** */
+        if (*dir == '"' || *dir == '*') b[o++] = '*';
+        b[o++] = *dir;
+    }
+    b[o++] = '"'; b[o] = 0;
     return run_internal("CD", b, NULL) == 0;
 }
 
 long os_number(void) { return csh.me->pr_TaskNum; }
+
+/* The CLI number and where this csh's data lies: a csh started from csh
+ * (same CLI) or one in another tab never picks the same T: or PIPE: name. */
+int csh_tag(char *b)
+{
+    static const char hx[] = "0123456789abcdef";
+    ULONG v = (ULONG)&csh;
+    int n = ltoa10(csh.me->pr_TaskNum, b), i;
+    b[n++] = '-';
+    for (i = 7; i >= 0; i--) { b[n + i] = hx[v & 15]; v >>= 4; }
+    n += 8;
+    b[n] = 0;
+    return n;
+}
+
+/* StackSwap (main.c) keeps tc_SPLower up to date */
+long os_stackleft(void)
+{
+    char here;
+    return &here - (char *)csh.me->pr_Task.tc_SPLower;
+}
 
 void os_quit(long rc)
 {
@@ -311,11 +413,12 @@ void os_history(void)
     hist_print(Output());
 }
 
+/* fiftieths of a second; wraps (unsigned), and time only takes differences */
 long os_ticks(void)
 {
     struct DateStamp d;
     DateStamp(&d);
-    return (d.ds_Days * 1440 + d.ds_Minute) * 3000 + d.ds_Tick;
+    return (long)(((ULONG)d.ds_Days * 1440 + (ULONG)d.ds_Minute) * 3000 + (ULONG)d.ds_Tick);
 }
 
 int os_pwd(char *b, int n)

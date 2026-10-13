@@ -28,7 +28,7 @@ typedef unsigned char UBYTE_;
 
 static int ltoa_(long n, char *b)
 {
-    char t[12];
+    char t[24];
     int i = 0, o = 0;
     unsigned long u = n < 0 ? -(unsigned long)n : (unsigned long)n;
     if (n < 0) b[o++] = '-';
@@ -53,9 +53,8 @@ static void *aalloc(Arena *a, long n)
         if (!b) return NULL;
         b->size = sz; b->used = 0; b->next = a->head; a->head = b;
     }
-    p = (char *)(a->head + 1) + a->head->used;
+    p = (char *)(a->head + 1) + a->head->used;   /* cleared already: os_alloc clears, nothing is reused */
     a->head->used += n;
-    memset(p, 0, n);
     return p;
 }
 
@@ -125,18 +124,21 @@ static int isspace_(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 static int isop(char c) { return c == ';' || c == '&' || c == '|' || c == '(' || c == ')' || c == '<' || c == '>'; }
 
 /* Skips a $( ... ) or $(( ... )) or ${ ... } or `...`; p at its opening.
- * Returns the position after it, or -1 when the text ends first. */
-static long skipnested(Lex *L, long p);
+ * Returns the position after it, or -1 when the text ends first. The one
+ * scanner for the lexer and for expanding, so both agree where a quote or
+ * a $( ) ends. Inside $( ), a case pattern's ")" (case x in a) ...) does
+ * not close it. */
+static long scan_nested(const char *src, long n, long p);
 
-static long skipquote(Lex *L, long p)       /* p at the " */
+static long scan_quote(const char *src, long n, long p)    /* p at the " */
 {
     p++;
-    while (p < L->n) {
-        char c = L->src[p];
+    while (p < n) {
+        char c = src[p];
         if (c == '"') return p + 1;
         if (c == '\\') { p += 2; continue; }
-        if (c == '`' || (c == '$' && p + 1 < L->n && (L->src[p + 1] == '(' || L->src[p + 1] == '{'))) {
-            p = skipnested(L, p);
+        if (c == '`' || (c == '$' && p + 1 < n && (src[p + 1] == '(' || src[p + 1] == '{'))) {
+            p = scan_nested(src, n, p);
             if (p < 0) return -1;
             continue;
         }
@@ -145,34 +147,64 @@ static long skipquote(Lex *L, long p)       /* p at the " */
     return -1;
 }
 
-static long skipnested(Lex *L, long p)
+static int wordch(char c)
 {
-    char c = L->src[p];
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+/* The reserved word "w" at p, in a command's place (after ( ; & | { or a
+ * line's start, spaces between), not part of a longer word? */
+static int keyword_at(const char *src, long n, long p, const char *w)
+{
+    int l = strlen(w);
+    long b = p;
+    if (p + l > n || memcmp(src + p, w, l)) return 0;
+    if (p + l < n && wordch(src[p + l])) return 0;
+    while (b > 0 && (src[b - 1] == ' ' || src[b - 1] == '\t')) b--;
+    return b == 0 || strchr("(;&|{\n", src[b - 1]) != NULL;
+}
+
+static long scan_nested(const char *src, long n, long p)
+{
+    char c = src[p];
     if (c == '`') {
         p++;
-        while (p < L->n && L->src[p] != '`') { if (L->src[p] == '\\') p++; p++; }
-        return p < L->n ? p + 1 : -1;
+        while (p < n && src[p] != '`') { if (src[p] == '\\') p++; p++; }
+        return p < n ? p + 1 : -1;
     }
     {
-        char open = L->src[p + 1], close = open == '(' ? ')' : '}';
-        int depth = 0;
+        char open = src[p + 1], close = open == '(' ? ')' : '}';
+        int depth = 0, cases = 0, casedepth[8];
         p += 1;
-        while (p < L->n) {
-            char d = L->src[p];
+        while (p < n) {
+            char d = src[p];
+            if (open == '(' && d == 'c' && keyword_at(src, n, p, "case")) {
+                if (cases < 8) casedepth[cases] = depth;
+                cases++; p += 4; continue;
+            }
+            if (open == '(' && d == 'e' && cases && keyword_at(src, n, p, "esac")) { cases--; p += 4; continue; }
             if (d == open) depth++;
-            else if (d == close) { if (--depth == 0) return p + 1; }
+            else if (d == close) {
+                /* a case pattern's ")" at the case's own depth closes nothing */
+                if (open == '(' && cases && cases <= 8 && depth == casedepth[cases - 1]) { p++; continue; }
+                if (--depth == 0) return p + 1;
+            }
             else if (d == '\'') {
                 p++;
-                while (p < L->n && L->src[p] != '\'') p++;
-                if (p >= L->n) return -1;
-            } else if (d == '"') { p = skipquote(L, p); if (p < 0) return -1; continue; }
+                while (p < n && src[p] != '\'') p++;
+                if (p >= n) return -1;
+            } else if (d == '"') { p = scan_quote(src, n, p); if (p < 0) return -1; continue; }
             else if (d == '\\') p++;
-            else if (d == '`') { p = skipnested(L, p); if (p < 0) return -1; continue; }
+            else if (d == '`') { p = scan_nested(src, n, p); if (p < 0) return -1; continue; }
+            else if (d == '$' && p + 1 < n && src[p + 1] == '{' && open == '(') { p = scan_nested(src, n, p); if (p < 0) return -1; continue; }
             p++;
         }
         return -1;
     }
 }
+
+static long skipquote(Lex *L, long p) { return scan_quote(L->src, L->n, p); }
+static long skipnested(Lex *L, long p) { return scan_nested(L->src, L->n, p); }
 
 /* Reads the bodies of the here-documents of the line just ended. */
 static void heredocs(Lex *L)
@@ -190,9 +222,13 @@ static void heredocs(Lex *L)
             int ll;
             if (s >= L->n) { L->incomplete = 1; return; }
             while (e < L->n && L->src[e] != '\n') e++;
-            if (e >= L->n) { L->incomplete = 1; return; }    /* the line is not finished yet */
             line = L->src + s; ll = e - s;
             if (r->striptabs) while (ll && *line == '\t') line++, ll--;
+            if (e >= L->n) {
+                /* the text's last line, no LF after it: the end only if it is the delimiter */
+                if (ll == dl && !memcmp(line, r->word, dl)) { L->pos = L->n; break; }
+                L->incomplete = 1; return;             /* the line is not finished yet */
+            }
             L->pos = e + 1;
             if (ll == dl && !memcmp(line, r->word, dl)) break;
             sput(&b, line, ll);
@@ -251,13 +287,24 @@ again:
             return t->type = T_REDIR;
         }
         if (c == '1' && d == '>') {
-            if (e == '>') { L->pos += 3; t->op = R_APP; } else { L->pos += 2; t->op = R_OUT; }
+            if (e == '&' && p + 3 < L->n && L->src[p + 3] == '2') { L->pos += 4; t->op = R_OUTERR; }
+            else if (e == '>') { L->pos += 3; t->op = R_APP; } else { L->pos += 2; t->op = R_OUT; }
             return t->type = T_REDIR;
         }
     }
     /* a word */
     while (p < L->n) {
         char c = L->src[p];
+        if (c == '(' && p > L->pos && (L->src[p - 1] == '#' || L->src[p - 1] == '~')) {
+            /* an Amiga pattern: #(a|b), ~(x) - to its ) on this line */
+            long q = p;
+            int d = 0;
+            for (; q < L->n && L->src[q] != '\n'; q++) {
+                if (L->src[q] == '(') d++;
+                else if (L->src[q] == ')' && --d == 0) break;
+            }
+            if (q < L->n && L->src[q] == ')') { p = q + 1; continue; }
+        }
         if (isspace_(c) || c == '\n' || isop(c)) break;
         if (c == '\'') {
             p++;
@@ -417,6 +464,7 @@ static Redir *parse_redir(Lex *L)
         }
         *d = 0;
         if (L->nhd < 16) L->hd[L->nhd++] = r;
+        else { L->error = 1; sh_error("syntax error:", "more than 16 here-documents on a line"); return NULL; }
     }
     return r;
 }
@@ -487,6 +535,7 @@ static Node *parse_command(Lex *L)
         return parse_compound_redirs(L, n);
     }
     if (t->type != T_WORD && t->type != T_REDIR) { fail(L, t); return NULL; }
+    if (isstop(t)) { L->error = 1; sh_error("syntax error near", t->text); return NULL; }   /* fi, done... alone */
     if (isword(t, "if")) { next(L); return parse_compound_redirs(L, parse_if(L)); }
     if (isword(t, "while") || isword(t, "until")) {
         int until = isword(t, "until");
@@ -663,7 +712,9 @@ static char **pos;              /* $1 ... */
 static int npos;
 static char *pos0 = "csh";
 
-typedef struct Func { struct Func *next; char *name; Node *body; Arena ar; } Func;
+/* busy: calls of it running; dead: replaced while running, freed when the
+ * last call ends (f() { f() { ...; }; ...; } redefines itself) */
+typedef struct Func { struct Func *next; char *name; Node *body; Arena ar; int busy, dead; } Func;
 
 /* local: the values a function's call put aside, given back at its end */
 typedef struct Saved { struct Saved *next; char *name, *val; int had; } Saved;
@@ -678,12 +729,13 @@ int sh_local(const char *name, const char *val)
         char *v = os_alloc(LINE_MAX);
         s->name = (char *)(s + 1);
         strcpy(s->name, name);
-        if (v && os_getvar(name, v, LINE_MAX) >= 0) { s->had = 1; s->val = v; }
+        int l;
+        if (v && (l = os_getlocal(name, v, LINE_MAX)) >= 0) { v[l < LINE_MAX ? l : LINE_MAX - 1] = 0; s->had = 1; s->val = v; }
         else if (v) os_free(v);
         s->next = *frame;
         *frame = s;
     }
-    if (val) os_setvar(name, val, 0); else os_unsetvar(name);
+    if (val) os_setvar(name, val, V_LOCAL); else os_unsetvar(name, 0);
     return 0;
 }
 
@@ -691,7 +743,7 @@ static void unframe(Saved *s)
 {
     while (s) {
         Saved *n = s->next;
-        if (s->had) os_setvar(s->name, s->val, 0); else os_unsetvar(s->name);
+        if (s->had) os_setvar(s->name, s->val, V_LOCAL); else os_unsetvar(s->name, 0);
         if (s->val) os_free(s->val);
         os_free(s);
         s = n;
@@ -703,9 +755,13 @@ long sh_rc(void) { return rc; }
 int sh_npos(void) { return npos; }
 int sh_getpos(int i, char **s) { if (i < 1 || i > npos) return 0; *s = pos[i - 1]; return 1; }
 
+/* set -- a b c / shift: the new list lives here. A function's call and a
+ * sourced script have their own (put aside and back around them), so a
+ * shift inside one never frees the caller's $1... */
+static Arena posar;
+
 void sh_setpos(int argc, char **argv)
 {
-    static Arena posar;          /* set -- a b c / shift: the new list lives here */
     Arena old = posar;
     char **v;
     int i;
@@ -719,12 +775,21 @@ void sh_setpos(int argc, char **argv)
 void sh_print(const char *s) { os_write(s, strlen(s)); }
 void sh_printn(const char *s, int n) { os_write(s, n); }
 
+/* "csh: a b" on the error stream (not into a pipe, a > file or a $( )) */
 void sh_error(const char *a, const char *b)
 {
-    sh_print("csh: ");
-    sh_print(a);
-    if (b && *b) { sh_print(" "); sh_print(b); }
-    sh_print("\n");
+    char t[300];
+    int n = 0, l;
+    l = strlen(a); if (l > 200) l = 200;
+    memcpy(t, "csh: ", 5); n = 5;
+    memcpy(t + n, a, l); n += l;
+    if (b && *b) {
+        l = strlen(b); if (l > (int)sizeof t - n - 2) l = sizeof t - n - 2;
+        t[n++] = ' ';
+        memcpy(t + n, b, l); n += l;
+    }
+    t[n++] = '\n';
+    os_err(t, n);
 }
 
 static void setrc(long r)
@@ -734,7 +799,7 @@ static void setrc(long r)
 }
 
 static long exec(Node *n);
-static long run_text(const char *text, int len, int top);
+static long run_text(const char *text, int len);
 
 /* ---- patterns --------------------------------------------------------------- */
 
@@ -745,49 +810,97 @@ static int lc(int c)
     return c;
 }
 
+/* One pattern element at *pp (? [..] \x or a character) against *sp:
+ * both moved on when it matches. */
+static int gone(const char **pp, const char **sp, int nocase)
+{
+    const char *p = *pp, *s = *sp;
+    if (*p == '?') { *pp = p + 1; *sp = s + 1; return 1; }
+    if (*p == '[') {
+        const char *q = p + 1;
+        int neg = 0, ok = 0;
+        if (*q == '!' || *q == '^') { neg = 1; q++; }
+        while (*q && (*q != ']' || q == p + 1 + neg)) {
+            if (q[1] == '-' && q[2] && q[2] != ']') {
+                int c = nocase ? lc(*s) : (UBYTE_)*s, lo = nocase ? lc(q[0]) : (UBYTE_)q[0], hi = nocase ? lc(q[2]) : (UBYTE_)q[2];
+                if (c >= lo && c <= hi) ok = 1;
+                q += 3;
+            } else { if (nocase ? lc(*q) == lc(*s) : *q == *s) ok = 1; q++; }
+        }
+        if (*q) {
+            if (ok == neg) return 0;
+            *pp = q + 1; *sp = s + 1;
+            return 1;
+        }
+        /* no ']': a plain [ */
+    }
+    if (*p == '\\' && p[1]) p++;
+    if (nocase ? lc(*p) != lc(*s) : *p != *s) return 0;
+    *pp = p + 1; *sp = s + 1;
+    return 1;
+}
+
+/* sh pattern: * ? [...] [!...] \x. Only the last * is ever gone back to,
+ * so many stars cost no more than one (no backtracking blow-up). */
 int gmatch(const char *p, const char *s, int nocase)
 {
-    while (*p) {
+    const char *star = NULL, *from = NULL;
+    while (*s) {
         if (*p == '*') {
             while (*p == '*') p++;
             if (!*p) return 1;
-            for (; *s; s++) if (gmatch(p, s, nocase)) return 1;
-            return 0;
-        }
-        if (!*s) return 0;
-        if (*p == '?') { p++; s++; continue; }
-        if (*p == '[') {
-            const char *q = p + 1;
-            int neg = 0, ok = 0;
-            if (*q == '!' || *q == '^') { neg = 1; q++; }
-            while (*q && (*q != ']' || q == p + 1 + neg)) {
-                if (q[1] == '-' && q[2] && q[2] != ']') {
-                    int c = nocase ? lc(*s) : (UBYTE_)*s, lo = nocase ? lc(q[0]) : (UBYTE_)q[0], hi = nocase ? lc(q[2]) : (UBYTE_)q[2];
-                    if (c >= lo && c <= hi) ok = 1;
-                    q += 3;
-                } else { if (nocase ? lc(*q) == lc(*s) : *q == *s) ok = 1; q++; }
-            }
-            if (!*q) { if (*s != '[') return 0; p++; s++; continue; }   /* no ']': a plain [ */
-            if (ok == neg) return 0;
-            p = q + 1; s++;
+            star = p; from = s;
             continue;
         }
-        if (*p == '\\' && p[1]) p++;
-        if (nocase ? lc(*p) != lc(*s) : *p != *s) return 0;
-        p++; s++;
+        if (*p && gone(&p, &s, nocase)) continue;
+        if (!star) return 0;
+        p = star; s = ++from;
     }
-    return !*s;
+    while (*p == '*') p++;
+    return !*p;
 }
 
 /* ---- arithmetic: $(( )) -------------------------------------------------------- */
 
-typedef struct { const char *p; int err; } Ar;
+typedef struct { const char *p; int err, depth; } Ar;
 
 static long a_expr(Ar *a);
 
 static void a_sp(Ar *a) { while (*a->p == ' ' || *a->p == '\t' || *a->p == '\n') a->p++; }
 
+/* A variable's value, itself arithmetic (x=y+1); its own frame, so a_prim's
+ * stays small (it calls itself for each ( - ! ~). */
+static long __attribute__((noinline)) a_var(Ar *a)
+{
+    static int nest;            /* x=x: a variable naming itself */
+    char name[64], buf[64];
+    int n = 0;
+    long v = 0;
+    while (wordch(*a->p) && n < 63) name[n++] = *a->p++;
+    name[n] = 0;
+    if (os_getvar(name, buf, sizeof buf) > 0) {
+        int err = 0;
+        if (nest >= 8) { a->err = 1; return 0; }
+        nest++;
+        v = arith(buf, &err);
+        nest--;
+        if (err) a->err = err;
+    }
+    return v;
+}
+
+static long a_prim1(Ar *a);
+
 static long a_prim(Ar *a)
+{
+    long v;
+    if (++a->depth > 100) { a->err = 1; return 0; }   /* ((((... or - - - -...: the stack */
+    v = a_prim1(a);
+    a->depth--;
+    return v;
+}
+
+static long a_prim1(Ar *a)
 {
     long v = 0;
     a_sp(a);
@@ -814,18 +927,7 @@ static long a_prim(Ar *a)
         }
         return v;
     }
-    if ((*a->p >= 'a' && *a->p <= 'z') || (*a->p >= 'A' && *a->p <= 'Z') || *a->p == '_') {
-        char name[64], buf[32];
-        int n = 0;
-        while (((*a->p >= 'a' && *a->p <= 'z') || (*a->p >= 'A' && *a->p <= 'Z') || (*a->p >= '0' && *a->p <= '9') || *a->p == '_') && n < 63)
-            name[n++] = *a->p++;
-        name[n] = 0;
-        if (os_getvar(name, buf, sizeof buf) > 0) {
-            int err = 0;
-            v = arith(buf, &err);
-        }
-        return v;
-    }
+    if ((*a->p >= 'a' && *a->p <= 'z') || (*a->p >= 'A' && *a->p <= 'Z') || *a->p == '_') return a_var(a);
     a->err = 1;
     return 0;
 }
@@ -883,7 +985,7 @@ long arith(const char *expr, int *err)
 {
     Ar a;
     long v;
-    a.p = expr; a.err = 0;
+    a.p = expr; a.err = 0; a.depth = 0;
     v = a_expr(&a);
     a_sp(&a);
     if (*a.p) a.err = 1;
@@ -901,6 +1003,8 @@ typedef struct {
     int quoted, pattern, have;
     int split;                  /* unquoted expansions split into words */
     int patmode;                /* a pattern: quoted * ? [ \ get a \ (literal for gmatch) */
+    int sqlit;                  /* ${x:-'a'} inside "...": the ' are kept, as bash does */
+    int heredoc;                /* a here-document's body: \" stays \" */
 } Exp;
 
 static void endfield(Exp *e)
@@ -955,13 +1059,19 @@ static void addtext(Exp *e, const char *s, int n, int inquotes)
     }
 }
 
+/* the rc of the last $( ): a=$(false) gives it to $? */
+static long caprc;
+static int capcount;
+static long subshell(Node *n, const char *text, int len);
+
 static char *capture(Arena *ar, const char *text, int len)
 {
     void *save = os_capture();
     char *out = NULL, *r;
     int n;
     if (!save) return astr(ar, "", 0);
-    run_text(text, len, 0);
+    caprc = subshell(NULL, text, len);
+    capcount++;
     n = os_captured(save, &out);
     if (!out) return astr(ar, "", 0);
     while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) n--;
@@ -972,7 +1082,7 @@ static char *capture(Arena *ar, const char *text, int len)
 
 static int getparam(Exp *e, const char *name, int n, Str *val)
 {
-    char b[16];
+    char b[24];
     val->n = 0;
     if (n == 1 && name[0] == '?') { sput(val, b, ltoa_(rc, b)); return 1; }
     if (n == 1 && name[0] == '#') { sput(val, b, ltoa_(npos, b)); return 1; }
@@ -1010,7 +1120,7 @@ static void brace(Exp *e, const char *s, int n, int inquotes)
     memset(&val, 0, sizeof val); val.ar = e->ar;
     memset(&w, 0, sizeof w); w.ar = e->ar;
     if (n > 1 && s[0] == '#') {       /* ${#name} */
-        char b[16];
+        char b[24];
         getparam(e, s + 1, n - 1, &val);
         addtext(e, b, ltoa_(val.n, b), 1);
         return;
@@ -1029,21 +1139,23 @@ static void brace(Exp *e, const char *s, int n, int inquotes)
         Exp sub;
         if (op == '-' || op == '=' || op == '+' || op == '?') {
             if ((op == '+') ? !empty : empty) {
+                /* the word's own quotes come off: ${u:-'a b'} is a b */
                 memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
-                expand_into(&sub, word, wl, 1);
+                sub.sqlit = inquotes;
+                expand_into(&sub, word, wl, 0);
                 if (op == '=') {
                     char nm[128];
-                    if (i < (int)sizeof nm) { memcpy(nm, s, i); nm[i] = 0; os_setvar(nm, sub.cur.s ? sub.cur.s : "", 0); }
+                    if (i < (int)sizeof nm) { memcpy(nm, s, i); nm[i] = 0; os_setvar(nm, sub.cur.s ? sub.cur.s : "", V_ASSIGN); }
                 }
                 if (op == '?') { sh_error(sub.cur.n ? sub.cur.s : "parameter not set", ""); aborted = 1; return; }
-                addtext(e, sub.cur.s ? sub.cur.s : "", sub.cur.n, inquotes);
+                addtext(e, sub.cur.s ? sub.cur.s : "", sub.cur.n, inquotes || sub.quoted);
             } else if (op != '+' && set) addtext(e, val.s ? val.s : "", len, inquotes);
             return;
         }
         if (s[i] == '#' || s[i] == '%') {
             int longest = s[i + 1] == s[i], k;
             const char *pat = s + i + 1 + longest;
-            char *v = val.s ? val.s : "", *p;
+            char none[1] = { 0 }, *v = val.s ? val.s : none, *p;
             memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
             sub.patmode = 1;
             expand_into(&sub, pat, n - (pat - s), 0);
@@ -1071,16 +1183,13 @@ static void brace(Exp *e, const char *s, int n, int inquotes)
 static int dollar(Exp *e, const char *s, int n, int inquotes)
 {
     if (n >= 3 && s[1] == '(' && s[2] == '(') {          /* $(( )) */
-        int d = 0, i;
-        for (i = 1; i < n; i++) {
-            if (s[i] == '(') d++;
-            else if (s[i] == ')' && --d == 0) break;
-        }
+        long end = scan_nested(s, n, 0);
+        int i = (end < 0 ? n + 1 : end) - 1;            /* at the last ) */
         {
             Exp sub;
             int err;
             long v;
-            char b[16];
+            char b[24];
             memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
             expand_into(&sub, s + 3, i - 4 > 0 ? i - 4 : 0, 1);
             v = arith(sub.cur.s ? sub.cur.s : "0", &err);
@@ -1090,14 +1199,8 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         return i + 1;
     }
     if (n >= 2 && s[1] == '(') {                          /* $( ) */
-        int d = 0, i, q = 0;
-        for (i = 1; i < n; i++) {
-            if (q) { if (s[i] == q) q = 0; else if (s[i] == '\\' && q == '"') i++; continue; }
-            if (s[i] == '\'' || s[i] == '"') q = s[i];
-            else if (s[i] == '\\') i++;
-            else if (s[i] == '(') d++;
-            else if (s[i] == ')' && --d == 0) break;
-        }
+        long end = scan_nested(s, n, 0);
+        int i = (end < 0 ? n + 1 : end) - 1;            /* at the ) */
         {
             char *out = capture(e->ar, s + 2, i - 2);
             addtext(e, out, strlen(out), inquotes);
@@ -1105,11 +1208,9 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         return i + 1;
     }
     if (n >= 2 && s[1] == '{') {
-        int i, d = 0;
-        for (i = 1; i < n; i++) {
-            if (s[i] == '{') d++;
-            else if (s[i] == '}' && --d == 0) break;
-        }
+        long end = scan_nested(s, n, 0);
+        int i = (end < 0 ? n + 1 : end) - 1;            /* at the } */
+        if (i <= 2) { sh_error("bad substitution:", "${}"); aborted = 1; return i + 1; }
         brace(e, s + 2, i - 2, inquotes);
         return i + 1;
     }
@@ -1163,14 +1264,14 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
             continue;
         }
         if (inquotes) {
-            if (c == '\\' && i + 1 < n && (s[i + 1] == '$' || s[i + 1] == '`' || s[i + 1] == '"' || s[i + 1] == '\\' || s[i + 1] == '\n')) {
+            if (c == '\\' && i + 1 < n && (s[i + 1] == '$' || s[i + 1] == '`' || (s[i + 1] == '"' && !e->heredoc) || s[i + 1] == '\\' || s[i + 1] == '\n')) {
                 if (s[i + 1] != '\n') qput(e, s[i + 1]);
                 i += 2; e->have = 1; continue;
             }
             qput(e, c); e->have = 1; i++;
             continue;
         }
-        if (c == '\'') {
+        if (c == '\'' && !e->sqlit) {
             int j = i + 1;
             while (j < n && s[j] != '\'') j++;
             qputs(e, s + i + 1, j - i - 1);
@@ -1179,18 +1280,11 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
             continue;
         }
         if (c == '"') {
-            int j = i + 1, q = 0;
-            /* to the closing quote, $( ) and ` ` inside skipped whole */
-            while (j < n) {
-                if (s[j] == '\\') { j += 2; continue; }
-                if (s[j] == '"' && !q) break;
-                if (s[j] == '`') q = !q;
-                if (s[j] == '$' && j + 1 < n && s[j + 1] == '(') {
-                    int d = 0;
-                    for (j++; j < n; j++) { if (s[j] == '(') d++; else if (s[j] == ')' && --d == 0) break; }
-                }
-                j++;
-            }
+            /* to the closing quote, $( ) ${ } and ` ` inside skipped whole */
+            long end = scan_quote(s, n, i);
+            int j = (end < 0 ? n + 1 : end) - 1, had = e->have;
+            /* "$@" with no arguments is no word at all */
+            if (j - i - 1 == 2 && s[i + 1] == '$' && s[i + 2] == '@' && !npos) { i = j + 1; if (!had) e->have = 0; continue; }
             e->have = 1; e->quoted = 1;
             expand_into(e, s + i + 1, j - i - 1, 1);
             i = j + 1;
@@ -1291,7 +1385,7 @@ static void braces(Exp *e, const char *w, int depth)
         const char *b = w + o + 1, *dots = strstr(b, "..");
         int la = dots - b, lb = (w + c) - (dots + 2);
         long x, y, step;
-        char ab[24], bb[24], num[16];
+        char ab[24], bb[24], num[24];
         int err1 = 0, err2 = 0, letters;
         if (la >= (int)sizeof ab || lb >= (int)sizeof bb) { expand_word(e, w); return; }
         memcpy(ab, b, la); ab[la] = 0;
@@ -1372,6 +1466,8 @@ static int redirs(Arena *ar, Redir *r, struct cmdline *c, char tmp[][40], int *n
         if (r->word && r->op != R_HERE) {
             w = expand1(ar, r->word, NULL);
             if ((int)strlen(w) > 250) { sh_error("redirection too long:", w); return 0; }
+            if (!*w && r->op != R_HERESTR) { sh_error("redirection to an empty name", ""); return 0; }
+            if (!strcmp(w, "/dev/null")) w = "NIL:";       /* bash scripts' 2>/dev/null */
         }
         switch (r->op) {
         case R_IN: strcpy(c->in, w); break;
@@ -1392,7 +1488,7 @@ static int redirs(Arena *ar, Redir *r, struct cmdline *c, char tmp[][40], int *n
             else {
                 /* the body as if in double quotes ($, ` and \ work) */
                 Exp e;
-                memset(&e, 0, sizeof e); e.ar = ar; e.cur.ar = ar;
+                memset(&e, 0, sizeof e); e.ar = ar; e.cur.ar = ar; e.heredoc = 1;
                 expand_into(&e, r->body ? r->body : "", r->body ? strlen(r->body) : 0, 1);
                 if (e.cur.s) sput(&b, e.cur.s, e.cur.n);
             }
@@ -1412,6 +1508,32 @@ static Func *findfunc(const char *name)
     return NULL;
 }
 
+/* A tree's here-documents in the order they were written (at most 16). */
+static void heredocs_of(Node *n, Redir **v, int *k)
+{
+    Redir *r;
+    Case *c;
+    if (!n) return;
+    for (r = n->redirs; r; r = r->next) if (r->op == R_HERE && *k < 16) v[(*k)++] = r;
+    heredocs_of(n->a, v, k);
+    heredocs_of(n->b, v, k);
+    heredocs_of(n->c, v, k);
+    for (c = n->cases; c; c = c->next) heredocs_of(c->body, v, k);
+}
+
+static void funcfree(Func *f)
+{
+    Arena old = f->ar;          /* the arena's record lives inside the arena: copied out first */
+    afree(&old);
+}
+
+static void funcdone(Func *f)
+{
+    if (--f->busy == 0 && f->dead) funcfree(f);
+}
+
+static int hasredir(struct cmdline *c) { return c->in[0] || c->out[0] || c->err[0] || c->errtoout; }
+
 static void deffunc(Node *n)
 {
     Func *f = findfunc(n->name), *nf;
@@ -1423,28 +1545,94 @@ static void deffunc(Node *n)
     if (!nf) return;
     nf->body = parse_command(&L);
     if (!nf->body || L.error) { afree(&ar); return; }
+    {   /* f() { cat <<E; } with the body on the next lines: it is not in the
+         * function's text; taken from the tree parsed with the line */
+        Redir *was[16], *now[16];
+        int nw = 0, nn = 0, i;
+        heredocs_of(n->a, was, &nw);
+        heredocs_of(nf->body, now, &nn);
+        for (i = 0; i < nw && i < nn; i++)
+            if (!now[i]->body && was[i]->body) now[i]->body = astr(&ar, was[i]->body, strlen(was[i]->body));
+    }
     nf->name = astr(&ar, n->name, strlen(n->name));
     if (f) {           /* replaced: the old one goes */
         Func **p = &funcs;
         while (*p != f) p = &(*p)->next;
         *p = f->next;
-        {   /* the arena's record lives inside the arena: copied out first */
-            Arena old = f->ar;
-            afree(&old);
-        }
+        if (f->busy) f->dead = 1; else funcfree(f);
     }
     nf->ar = ar;
     nf->next = funcs;
     funcs = nf;
 }
 
-static long run_simple(Node *n)
+/* A word for csh's own parser again (an alias's arguments): plain, or in
+ * '...' with ' as '\''; an unquoted pattern stays a pattern. */
+static void cshquote(Str *b, struct shfield *f)
 {
+    int i, plain = f->len > 0;
+    if (f->pattern && !f->quoted) { sput(b, f->s, f->len); return; }
+    for (i = 0; i < f->len && plain; i++) {
+        char c = f->s[i];
+        if (!(wordch(c) || ((UBYTE_)c >= 0xa0) || strchr("-./:+,=@%^", c))) plain = 0;
+    }
+    if (plain) { sput(b, f->s, f->len); return; }
+    sputc(b, '\'');
+    for (i = 0; i < f->len; i++) {
+        if (f->s[i] == '\'') sput(b, "'\\''", 4); else sputc(b, f->s[i]);
+    }
+    sputc(b, '\'');
+}
+
+static int ieq_(const char *a, const char *b)
+{
+    while (*a && lc(*a) == lc(*b)) a++, b++;
+    return !*a && !*b;
+}
+
+/* The aliases being expanded now: alias ls='ls -F' runs the command ls
+ * inside, not itself again (bash's rule). */
+static const char *aliasing[8];
+static int naliasing;
+
+static int inalias(const char *name)
+{
+    int i;
+    for (i = 0; i < naliasing; i++) if (ieq_(aliasing[i], name)) return 1;
+    return 0;
+}
+
+/* A value a prefix assignment (X=1 cmd) or local put aside: only a local
+ * one; one from ENV: stays where it is and shows again when the local
+ * copy goes. */
+typedef struct Old { struct Old *next; char *name, *val; } Old;
+
+static Old *putaside(Arena *ar, Old *list, const char *name)
+{
+    Old *o = aalloc(ar, sizeof *o);
+    char *v = aalloc(ar, LINE_MAX);
+    int l;
+    if (!o || !v) return list;
+    o->name = astr(ar, name, strlen(name));
+    if ((l = os_getlocal(name, v, LINE_MAX)) >= 0) { v[l < LINE_MAX ? l : LINE_MAX - 1] = 0; o->val = v; }
+    o->next = list;
+    return o;
+}
+
+static void giveback(Old *o)
+{
+    for (; o; o = o->next) { if (o->val) os_setvar(o->name, o->val, V_LOCAL); else os_unsetvar(o->name, 0); }
+}
+
+static long __attribute__((noinline)) run_simple(Node *n)
+{
+    static char ab[LINE_MAX];   /* an alias's text: used up before anything runs */
     Arena ar = { NULL };
     Exp e;
     struct cmdline *c;
-    char tmp[4][40], **oldval = NULL, **oldname = NULL;
-    int ntmp = 0, i, saved[8], nsaved = 0, b;
+    char tmp[4][40];
+    int ntmp = 0, i, b, caps;
+    Old *old = NULL;
     long r = 0;
 
     memset(&e, 0, sizeof e);
@@ -1453,68 +1641,72 @@ static long run_simple(Node *n)
     if (aborted) { afree(&ar); return 1; }
 
     /* name=value alone: set; before a command: only for it */
-    for (i = 0; i < n->nassigns; i++) {
-        char *eq = strchr(n->assigns[i], '='), name[128], *v;
+    caps = capcount;
+    for (i = 0; i < n->nassigns && !aborted; i++) {
+        char *eq = strchr(n->assigns[i], '='), *name, *v;
         int nl = eq - n->assigns[i];
-        if (nl >= (int)sizeof name) continue;
-        memcpy(name, n->assigns[i], nl); name[nl] = 0;
+        name = astr(&ar, n->assigns[i], nl);
         v = expand1(&ar, eq + 1, NULL);
-        if (e.nf && nsaved < 8) {
-            if (!oldval) { oldval = aalloc(&ar, 8 * sizeof *oldval); oldname = aalloc(&ar, 8 * sizeof *oldname); }
-            if (oldval && oldname && (oldval[nsaved] = aalloc(&ar, LINE_MAX))) {
-                saved[nsaved] = os_getvar(name, oldval[nsaved], LINE_MAX) >= 0;
-                oldname[nsaved] = astr(&ar, name, nl);
-                nsaved++;
-            }
-        }
-        os_setvar(name, v, 0);
+        if (!name || !v) { r = 20; goto done0; }
+        if (e.nf) old = putaside(&ar, old, name);
+        os_setvar(name, v, e.nf ? V_LOCAL : V_ASSIGN);   /* X=1 cmd: only for cmd */
     }
-    if (!(c = aalloc(&ar, sizeof *c))) { afree(&ar); return 20; }
-    if (!redirs(&ar, n->redirs, c, tmp, &ntmp)) { r = 10; goto done; }
+    if (aborted) { r = 1; goto done0; }
+    if (!(c = aalloc(&ar, sizeof *c))) { r = 20; goto done0; }
+    if (!redirs(&ar, n->redirs, c, tmp, &ntmp)) { r = 20; goto done; }
 
     if (sh_opt_x && e.nf) {
-        sh_print("+");
-        for (i = 0; i < e.nf; i++) { sh_print(" "); sh_printn(e.f[i].s, e.f[i].len); }
-        sh_print("\n");
+        Str t;
+        memset(&t, 0, sizeof t); t.ar = &ar;
+        sputc(&t, '+');
+        for (i = 0; i < e.nf; i++) { sputc(&t, ' '); sput(&t, e.f[i].s, e.f[i].len); }
+        sputc(&t, '\n');
+        os_err(t.s, t.n);
     }
     if (!e.nf) {
         /* only redirections: the files are made (or read), nothing runs */
-        void *s = (c->in[0] || c->out[0] || c->err[0]) ? os_redir(c) : NULL;
+        void *s = NULL;
+        if (hasredir(c) && !(s = os_redir(c))) { r = 20; goto done; }
         if (s) os_unredir(s);
-        r = 0;
+        /* a=$(cmd): the rc is the command's, as in bash */
+        r = capcount != caps ? caprc : 0;
         goto done;
     }
 
     {
-        char *name = e.f[0].s, **argv, *ab = aalloc(&ar, LINE_MAX);
+        char *name = e.f[0].s, **argv;
         Func *f;
         argv = aalloc(&ar, (e.nf + 1) * sizeof *argv);
-        for (i = 0; argv && i < e.nf; i++) argv[i] = e.f[i].s;
+        if (!argv) { r = 20; goto done; }
+        for (i = 0; i < e.nf; i++) argv[i] = e.f[i].s;
 
         /* an alias (the ROM's Alias, or alias x=...): its text, the rest after it */
-        if (ab && !e.f[0].quoted && depth < 8 && os_getalias(name, ab, LINE_MAX) >= 0) {
+        if (!e.f[0].quoted && naliasing < 8 && !inalias(name) && os_getalias(name, ab, sizeof ab) >= 0) {
             Str t;
             char *br = strstr(ab, "[]");
+            void *s = NULL;
             memset(&t, 0, sizeof t); t.ar = &ar;
             sput(&t, ab, br ? br - ab : (int)strlen(ab));
-            for (i = 1; i < e.nf; i++) { sputc(&t, ' '); amigaarg(&t, &e.f[i]); }
+            for (i = 1; i < e.nf; i++) { sputc(&t, ' '); cshquote(&t, &e.f[i]); }
             if (br) sput(&t, br + 2, strlen(br + 2));
-            depth++;
-            {
-                void *s = (c->in[0] || c->out[0] || c->err[0] || c->errtoout) ? os_redir(c) : NULL;
-                r = run_text(t.s, t.n, 0);
-                if (s) os_unredir(s);
-            }
-            depth--;
+            if (hasredir(c) && !(s = os_redir(c))) { r = 20; goto done; }
+            aliasing[naliasing++] = name;
+            r = run_text(t.s ? t.s : "", t.n);
+            naliasing--;
+            if (s) os_unredir(s);
             goto done;
         }
         if ((f = findfunc(name))) {
             char **opos = pos, *opos0 = pos0;
             int onpos = npos;
-            void *s = (c->in[0] || c->out[0] || c->err[0] || c->errtoout) ? os_redir(c) : NULL;
-            if (depth > 40) { sh_error("too deep:", name); r = 20; goto done; }
+            Arena oposar = posar;
+            void *s = NULL;
+            if (depth > 100 || os_stackleft() < STACK_NEEDED) { sh_error("too deep:", name); r = 20; goto done; }
+            if (hasredir(c) && !(s = os_redir(c))) { r = 20; goto done; }
             pos = argv + 1; npos = e.nf - 1; pos0 = name;
+            posar.head = NULL;
             depth++;
+            f->busy++;
             {
                 Saved *mine = NULL, **outer = frame;
                 frame = &mine;
@@ -1522,15 +1714,18 @@ static long run_simple(Node *n)
                 frame = outer;
                 unframe(mine);
             }
+            funcdone(f);
             depth--;
             if (sh_return) { sh_return = 0; r = rc; }
+            afree(&posar);
+            posar = oposar;
             pos = opos; npos = onpos; pos0 = opos0;
             if (s) os_unredir(s);
             goto done;
         }
         if ((b = builtin_find(name)) >= 0) {
-            void *s = (c->in[0] || c->out[0] || c->err[0] || c->errtoout) ? os_redir(c) : NULL;
-            if (!s && (c->in[0] || c->out[0] || c->err[0])) { r = 10; goto done; }
+            void *s = NULL;
+            if (hasredir(c) && !(s = os_redir(c))) { r = 20; goto done; }
             r = builtin_run(b, e.nf, argv);
             if (s) os_unredir(s);
             if (r != -999) goto done;
@@ -1550,9 +1745,8 @@ static long run_simple(Node *n)
     }
 done:
     for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
-    for (i = nsaved - 1; i >= 0; i--) {
-        if (saved[i]) os_setvar(oldname[i], oldval[i], 0); else os_unsetvar(oldname[i]);
-    }
+done0:
+    giveback(old);
     afree(&ar);
     return r;
 }
@@ -1573,20 +1767,31 @@ static void globadd(const char *name, void *u)
     endfield(e);
 }
 
-/* The files a pattern matches, in order, as fields (csh's own for loop). */
+static int fieldcmp(const struct shfield *x, const struct shfield *y)
+{
+    const char *a = x->s, *b = y->s;
+    while (*a && lc(*a) == lc(*b)) a++, b++;
+    return lc(*a) - lc(*b);
+}
+
+/* The files a pattern matches, in order, as fields (csh's own for loop):
+ * sorted case blind, a merge sort (a big drawer is no slower than n log n). */
 static void globto(Exp *e, const char *pat)
 {
-    int before = e->nf, i, j;
+    int before = e->nf, n, w, i;
+    struct shfield *a, *t;
     os_glob(pat, globadd, e);
-    for (i = before + 1; i < e->nf; i++) {          /* sorted, case blind */
-        struct shfield t = e->f[i];
-        for (j = i; j > before; j--) {
-            const char *a = e->f[j - 1].s, *b = t.s;
-            while (*a && lc(*a) == lc(*b)) a++, b++;
-            if (lc(*a) <= lc(*b)) break;
-            e->f[j] = e->f[j - 1];
+    n = e->nf - before;
+    if (n < 2 || !(t = aalloc(e->ar, n * sizeof *t))) return;
+    a = e->f + before;
+    for (w = 1; w < n; w *= 2) {
+        for (i = 0; i < n; i += 2 * w) {
+            int l = i, m = i + w < n ? i + w : n, r = m, end = i + 2 * w < n ? i + 2 * w : n, k = i;
+            while (l < m && r < end) t[k++] = fieldcmp(&a[l], &a[r]) <= 0 ? a[l++] : a[r++];
+            while (l < m) t[k++] = a[l++];
+            while (r < end) t[k++] = a[r++];
         }
-        e->f[j] = t;
+        memcpy(a, t, n * sizeof *t);
     }
 }
 
@@ -1601,7 +1806,7 @@ static long cond(Node *n)
 
 static int stopping(void)
 {
-    if (!aborted && os_break()) { sh_print("***Break\n"); aborted = 1; }
+    if (!aborted && os_break()) { os_err("***Break\n", 8); aborted = 1; }
     return aborted || sh_exiting || sh_return || sh_break || sh_continue;
 }
 
@@ -1631,12 +1836,14 @@ static void nodetext(Node *n, Str *b)
     }
 }
 
+/* The stages of a pipe in order; -1 when there are more than max. */
 static int flatten(Node *n, Node **st, int max)
 {
     int k;
     if (n->type != N_PIPE) { st[0] = n; return 1; }
     k = flatten(n->a, st, max);
-    if (k < max) st[k++] = n->b;
+    if (k < 0 || k >= max) return -1;
+    st[k++] = n->b;
     return k;
 }
 
@@ -1647,6 +1854,8 @@ static int internal(Arena *ar, Node *n)
     int q;
     if (n->type != N_SIMPLE) return 1;
     if (!n->nwords) return 1;
+    /* $(cmd) | ...: expanding it to see would run cmd twice; csh runs it */
+    if (strchr(n->words[0], '`') || strstr(n->words[0], "$(")) return 1;
     w = expand1(ar, n->words[0], &q);
     if (findfunc(w) || builtin_find(w) >= 0) return 1;
     if (!q && os_getalias(w, ab, sizeof ab) >= 0) return 1;
@@ -1663,8 +1872,9 @@ static int stagecmd(Arena *ar, Node *n, struct cmdline *c, void *job)
     memset(&e, 0, sizeof e); e.ar = ar;
     for (i = 0; i < n->nwords && !aborted; i++) expand(&e, n->words[i], 1);
     if (aborted || !e.nf) return 0;
-    if (!redirs(ar, n->redirs, c, tmp, &ntmp)) return 0;
-    for (i = 0; i < ntmp; i++) os_job_tmp(job, tmp[i]);
+    i = redirs(ar, n->redirs, c, tmp, &ntmp);
+    { int k; for (k = 0; k < ntmp; k++) os_job_tmp(job, tmp[k]); }   /* made before one failed too */
+    if (!i) return 0;
     memset(&a, 0, sizeof a); a.ar = ar;
     for (i = 1; i < e.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &e.f[i]); }
     if (a.n + 2 >= (int)sizeof c->args || e.f[0].len >= (int)sizeof c->cmd) { sh_error("line too long", ""); return 0; }
@@ -1679,16 +1889,16 @@ static int stagecmd(Arena *ar, Node *n, struct cmdline *c, void *job)
  * its own, joined to the next by PIPE:; csh's own stage runs in csh (the
  * last one reading the pipe as it comes, one in the middle into a T: file
  * the next one reads). The rc is the last stage's. */
-static long pipeline(Node *n, int bg)
+static long __attribute__((noinline)) pipeline(Node *n, int bg)
 {
     Arena ar = { NULL };
-    Node *st[16];
+    Node *st[32];
     Str text;
     void *job;
     long in, r = 0;
     int ns, i, lastint = 0;
     memset(&text, 0, sizeof text); text.ar = &ar;
-    ns = flatten(n, st, 16);
+    if ((ns = flatten(n, st, 32)) < 0) { sh_error("a pipe of more than 32 commands", ""); afree(&ar); setrc(10); return 10; }
     nodetext(n, &text);
     if (!(job = os_job_new(text.s ? text.s : "", bg))) { afree(&ar); return 20; }
     in = os_job_in(job);
@@ -1718,7 +1928,10 @@ static long pipeline(Node *n, int bg)
             long out, next = 0;
             /* a stage that cannot start: the next one reads nothing (in 0 = NIL:) */
             if (!c || !stagecmd(&ar, st[i], c, job)) { os_close(job, in); in = 0; r = 10; if (last) break; continue; }
-            if (sh_opt_x) { sh_print("+ "); sh_print(c->cmd); sh_print(" "); sh_printn(c->args, c->arglen - 1); sh_print("\n"); }
+            if (sh_opt_x) {
+                os_err("+ ", 2); os_err(c->cmd, strlen(c->cmd)); os_err(" ", 1);
+                os_err(c->args, c->arglen);
+            }
             if (last && !bg) {          /* in csh itself, as the ROM Shell does */
                 r = os_lastrun(job, c, in);
                 lastint = 1;
@@ -1736,28 +1949,113 @@ static long pipeline(Node *n, int bg)
     return r;
 }
 
+/* A block with redirections (if, while, { }, ( )): opened around it. */
+static long __attribute__((noinline)) exec_redirected(Node *n)
+{
+    Arena ar = { NULL };
+    char tmp[4][40];
+    int ntmp = 0, i;
+    long r;
+    void *s = blockredir(&ar, n, tmp, &ntmp);
+    Redir *keep = n->redirs;
+    if (!s || s == (void *)-1) {
+        /* a failed open was said (os_redir or redirs): the block does not run */
+        for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
+        afree(&ar);
+        setrc(20);
+        return 20;
+    }
+    n->redirs = NULL;
+    r = exec(n);
+    n->redirs = keep;
+    os_unredir(s);
+    for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
+    afree(&ar);
+    return r;
+}
+
+static long __attribute__((noinline)) exec_for(Node *n)
+{
+    Arena ar = { NULL };
+    Exp e;
+    int i;
+    long r = 0;
+    memset(&e, 0, sizeof e); e.ar = &ar;
+    if (n->haslist) {
+        for (i = 0; i < n->nwords && !aborted; i++) {
+            int before = e.nf;
+            expand(&e, n->words[i], 1);
+            /* csh's own loop matches patterns itself: *.txt -> the files */
+            if (e.nf == before + 1 && e.f[before].pattern && !e.f[before].quoted) {
+                struct shfield pat = e.f[before];
+                e.nf = before;
+                globto(&e, pat.s);
+                if (e.nf == before) { e.f[e.nf++] = pat; }
+            }
+        }
+    } else {
+        for (i = 0; i < npos; i++) { sput(&e.cur, pos[i], strlen(pos[i])); e.have = 1; endfield(&e); }
+    }
+    sh_loops++;
+    for (i = 0; i < e.nf && !aborted; i++) {
+        os_setvar(n->name, e.f[i].s, V_ASSIGN);
+        r = loopbody(n->b);
+        if (sh_break) { sh_break--; break; }
+        if (stopping()) break;
+    }
+    sh_loops--;
+    afree(&ar);
+    setrc(r);
+    return r;
+}
+
+static long __attribute__((noinline)) exec_case(Node *n)
+{
+    Arena ar = { NULL };
+    char *w = expand1(&ar, n->name, NULL);
+    Case *c;
+    long r = 0;
+    for (c = n->cases; c; c = c->next) {
+        int i, hit = 0;
+        for (i = 0; i < c->npats && !hit; i++) {
+            Exp pe;
+            memset(&pe, 0, sizeof pe); pe.ar = &ar; pe.patmode = 1;
+            expand(&pe, c->pats[i], 0);
+            hit = gmatch(pe.nf ? pe.f[0].s : "", w, 0);
+        }
+        if (hit) { r = exec(c->body); break; }
+    }
+    afree(&ar);
+    if (!c) setrc(0);
+    return r;
+}
+
+/* ( ... ) and $( ... ): not a subshell (no fork on the Amiga), but exit,
+ * return, break and continue end only it, as they would end bash's
+ * subshell; its exit code is its rc. */
+static long subshell(Node *n, const char *text, int len)
+{
+    int ob = sh_break, oc = sh_continue, oloops = sh_loops;
+    long r;
+    sh_break = sh_continue = 0;
+    sh_loops = 0;
+    r = n ? exec(n) : run_text(text, len);
+    if (sh_exiting) { sh_exiting = 0; r = sh_exitrc; setrc(r); }
+    sh_return = 0;
+    sh_break = ob; sh_continue = oc; sh_loops = oloops;
+    return r;
+}
+
 static long exec(Node *n)
 {
     long r = 0;
     if (!n || stopping()) return rc;
-    if (n->redirs && n->type != N_SIMPLE) {
-        Arena ar = { NULL };
-        char tmp[4][40];
-        int ntmp = 0, i;
-        void *s = blockredir(&ar, n, tmp, &ntmp);
-        Redir *keep = n->redirs;
-        if (s == (void *)-1 || (!s && (keep))) {
-            /* a failed open was said; nothing to undo */
-            if (s == (void *)-1) { for (i = 0; i < ntmp; i++) os_delete(tmp[i]); afree(&ar); setrc(10); return 10; }
-        }
-        n->redirs = NULL;
-        r = exec(n);
-        n->redirs = keep;
-        if (s && s != (void *)-1) os_unredir(s);
-        for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
-        afree(&ar);
-        return r;
+    if (os_stackleft() < STACK_NEEDED / 2) {      /* $( ) in $( ) in ..., aliases, sourced scripts */
+        sh_error("too deep:", "the stack is nearly full");
+        aborted = 1;
+        return 20;
     }
+    if (n->redirs && n->type != N_SIMPLE) return exec_redirected(n);
     switch (n->type) {
     case N_SIMPLE:
         r = run_simple(n);
@@ -1784,8 +2082,10 @@ static long exec(Node *n)
         return pipeline(n, 0);
     case N_BG:
         return pipeline(n->a, 1);
-    case N_GROUP: case N_SUB:
+    case N_GROUP:
         return n->a ? exec(n->a) : (setrc(0), 0);
+    case N_SUB:
+        return n->a ? subshell(n->a, NULL, 0) : (setrc(0), 0);
     case N_IF:
         r = cond(n->a);
         if (stopping()) return rc;
@@ -1807,58 +2107,10 @@ static long exec(Node *n)
         sh_loops--;
         setrc(r);
         return r;
-    case N_FOR: {
-        Arena ar = { NULL };
-        Exp e;
-        int i;
-        memset(&e, 0, sizeof e); e.ar = &ar;
-        if (n->haslist) {
-            for (i = 0; i < n->nwords; i++) {
-                int before = e.nf;
-                expand(&e, n->words[i], 1);
-                /* csh's own loop matches patterns itself: *.txt -> the files */
-                if (e.nf == before + 1 && e.f[before].pattern && !e.f[before].quoted) {
-                    struct shfield pat = e.f[before];
-                    e.nf = before;
-                    globto(&e, pat.s);
-                    if (e.nf == before) { e.f[e.nf++] = pat; }
-                }
-            }
-        } else {
-            for (i = 0; i < npos; i++) { sput(&e.cur, pos[i], strlen(pos[i])); e.have = 1; endfield(&e); }
-        }
-        sh_loops++;
-        r = 0;
-        for (i = 0; i < e.nf; i++) {
-            os_setvar(n->name, e.f[i].s, 0);
-            r = loopbody(n->b);
-            if (sh_break) { sh_break--; break; }
-            if (stopping()) break;
-        }
-        sh_loops--;
-        afree(&ar);
-        setrc(r);
-        return r;
-    }
-    case N_CASE: {
-        Arena ar = { NULL };
-        char *w = expand1(&ar, n->name, NULL);
-        Case *c;
-        r = 0;
-        for (c = n->cases; c; c = c->next) {
-            int i, hit = 0;
-            for (i = 0; i < c->npats && !hit; i++) {
-                Exp pe;
-                memset(&pe, 0, sizeof pe); pe.ar = &ar; pe.patmode = 1;
-                expand(&pe, c->pats[i], 0);
-                hit = gmatch(pe.nf ? pe.f[0].s : "", w, 0);
-            }
-            if (hit) { r = exec(c->body); break; }
-        }
-        afree(&ar);
-        if (!c) setrc(0);
-        return r;
-    }
+    case N_FOR:
+        return exec_for(n);
+    case N_CASE:
+        return exec_case(n);
     case N_FUNC:
         deffunc(n);
         setrc(0);
@@ -1871,8 +2123,8 @@ static long exec(Node *n)
 
 /* Parses and runs text line by line (a line's commands run before the next
  * line is read, so a function defined on one line is there on the next).
- * top: an error ends the whole text. Returns the last rc. */
-static long run_text(const char *text, int len, int top)
+ * An error ends the whole text. Returns the last rc. */
+static long run_text(const char *text, int len)
 {
     Arena ar = { NULL };
     Lex L;
@@ -1891,13 +2143,21 @@ static long run_text(const char *text, int len, int top)
     }
     depth--;
     afree(&ar);
-    (void)top;
     return r;
 }
 
 long lang_eval(const char *text)
 {
-    return run_text(text, strlen(text), 0);
+    long r;
+    int top = !depth;
+    if (top) { aborted = 0; sh_break = sh_continue = sh_return = 0; }   /* csh COMMAND, from run.c */
+    r = run_text(text, strlen(text));
+    if (top) {
+        if (aborted) { r = 20; setrc(r); }
+        if (sh_exiting) { sh_exiting = 0; r = sh_exitrc; }
+        aborted = 0; sh_break = sh_continue = sh_return = 0;
+    }
+    return r;
 }
 
 /* 1 = complete, 0 = more lines wanted, -1 = a syntax error (said) */
@@ -1946,7 +2206,7 @@ int lang_line(const char *line, int interactive)
     if (ok > 0) {
         aborted = 0;
         sh_break = sh_continue = sh_return = 0;
-        run_text(pend, pendlen, 1);
+        run_text(pend, pendlen);
         if (aborted) setrc(20);
         aborted = 0;
         sh_break = sh_continue = sh_return = 0;
@@ -1963,19 +2223,39 @@ void lang_reset(void)
     lang_more = 0;
 }
 
+void lang_end(void)
+{
+    Func *f, *n;
+    for (f = funcs; f; f = n) { n = f->next; if (!f->busy) funcfree(f); }
+    funcs = NULL;
+    afree(&posar);
+    pos = NULL; npos = 0;
+    if (pend) os_free(pend);
+    pend = NULL; pendlen = pendcap = 0;
+}
+
 /* ---- scripts ------------------------------------------------------------------------ */
 
 long lang_source(const char *path, int argc, char **argv)
 {
     long len, r;
-    char *text = os_readfile(path, &len), **opos = pos, *opos0 = pos0;
-    int onpos = npos;
+    char *text = os_readfile(path, &len), **opos = pos, *opos0 = pos0, *name;
+    int onpos = npos, top = !depth;
+    Arena oposar = posar, nm = { NULL };
     if (!text) { sh_error("cannot read", path); return 20; }
-    pos = argv; npos = argc; pos0 = (char *)path;
+    if (top) { aborted = 0; sh_break = sh_continue = sh_return = 0; }   /* from the Amiga's rules: a fresh start */
+    name = astr(&nm, path, strlen(path));          /* $0: the caller's path may be a static buffer */
+    posar.head = NULL;
+    sh_setpos(argc, argv);
+    pos0 = name ? name : "csh";
     sourcing++;
-    r = run_text(text, len, 1);
+    r = run_text(text, len);
     sourcing--;
+    afree(&posar);
+    posar = oposar;
     pos = opos; npos = onpos; pos0 = opos0;
+    afree(&nm);
+    if (top) { if (aborted) r = 20; aborted = 0; sh_break = sh_continue = 0; }
     if (sh_exiting) { sh_exiting = 0; r = sh_exitrc; }
     sh_return = 0;
     os_free(text);
@@ -1985,13 +2265,9 @@ long lang_source(const char *path, int argc, char **argv)
 
 int lang_isscript(const char *path)
 {
-    long len;
-    char *t = os_readfile(path, &len);
-    int yes;
-    if (!t) return 0;
-    yes = len >= 5 && !memcmp(t, "#!csh", 5) && (len == 5 || t[5] == '\n' || t[5] == ' ' || t[5] == '\r');
-    os_free(t);
-    return yes;
+    char t[6];
+    int len = os_head(path, t, 6);       /* the first line's start only, not the whole file */
+    return len >= 5 && !memcmp(t, "#!csh", 5) && (len == 5 || t[5] == '\n' || t[5] == ' ' || t[5] == '\r');
 }
 
 /* An s-bit file starting with #!csh, typed as a command: its arguments
@@ -2017,9 +2293,12 @@ long lang_runscript(const char *path, struct cmdline *c)
         argv[argc++] = w.s ? w.s : astr(&ar, "", 0);
     }
     {
-        void *s = (c->in[0] || c->out[0] || c->err[0]) ? os_redir(c) : NULL;
-        r = lang_source(path, argc, argv);
+        /* a pipe's last stage: the pipe is its input (job.c's c->inh) */
+        void *sel = c->inh && !c->in[0] ? os_select(c->inh, 0) : NULL, *s = NULL;
+        if (hasredir(c) && !(s = os_redir(c))) r = 20;
+        else r = lang_source(path, argc, argv);
         if (s) os_unredir(s);
+        if (sel) os_unselect(sel);
     }
     afree(&ar);
     return r;

@@ -3,7 +3,7 @@
 # (csh FROM it, with two arguments) against NAME.want. W=probe/a: the A1200.
 cd "$(dirname "$0")"; W=${W:-probe/w}
 $W put ../csh RAM:csh >/dev/null || exit 2
-$W put ../ls RAM:ls >/dev/null; $W put probe/pcat RAM:pcat >/dev/null; $W put probe/rcx RAM:rcx >/dev/null
+$W put ../ls RAM:ls >/dev/null; $W put probe/pcat RAM:pcat >/dev/null; $W put probe/rcx RAM:rcx >/dev/null; $W put probe/sigs RAM:sigs >/dev/null
 names=("$@"); [ ${#names[@]} = 0 ] && names=($(cd lang && ls *.csh | sed 's/\.csh$//'))
 bad=0
 for n in "${names[@]}"; do

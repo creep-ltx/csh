@@ -61,28 +61,56 @@ static int isdirlock(BPTR l, struct FileInfoBlock *fib)
 
 /* ---- the command table -------------------------------------------------- */
 
-#define TSLOTS 1024             /* a power of two; more names than this: slower, not wrong */
 #define MAXDIRS 24
+#define MAXC    8               /* drawers of a multi-assign C: */
 
 static char *pool;              /* the names, each ending in 0 */
 static long poollen, poolcap;
-static LONG slot[TSLOTS];       /* offset + 1 into pool, 0 = empty */
-static int tnames, built, checked;
+static LONG *slot;              /* offset + 1 into pool, 0 = empty; nslots a power of two */
+static int nslots, tnames, built, checked;
 static struct DateStamp dirdate[MAXDIRS];
 static BPTR dirlock[MAXDIRS];
 static int ndirs;
+static void tplforget(void);
+
+static void tput(long off)      /* a name already in the pool, into the slots */
+{
+    const char *name = pool + off;
+    ULONG h = hash(name, strlen(name)) & (nslots - 1);
+    while (slot[h]) h = (h + 1) & (nslots - 1);
+    slot[h] = off + 1;
+}
+
+/* Twice the slots, the names put in again: never full (no command left red). */
+static int tgrow(void)
+{
+    int n = nslots ? nslots * 2 : 1024;
+    LONG *s = AllocVec(n * sizeof *s, MEMF_ANY | MEMF_CLEAR);
+    long o;
+    if (!s) return 0;
+    if (slot) FreeVec(slot);
+    slot = s; nslots = n;
+    for (o = 0; o < poollen; o += strlen(pool + o) + 1) tput(o);
+    return 1;
+}
+
+static int thas(const char *name, int n)
+{
+    ULONG h;
+    if (!nslots) return 0;
+    h = hash(name, n) & (nslots - 1);
+    while (slot[h]) {
+        const char *s = pool + slot[h] - 1;
+        if ((int)strlen(s) == n && ieq(s, name, n)) return 1;
+        h = (h + 1) & (nslots - 1);
+    }
+    return 0;
+}
 
 static void tadd(const char *name, int n)
 {
-    ULONG h = hash(name, n) & (TSLOTS - 1);
-    int probes = 0;
-    if (tnames >= TSLOTS * 3 / 4) return;
-    while (slot[h]) {
-        const char *s = pool + slot[h] - 1;
-        if ((int)strlen(s) == n && ieq(s, name, n)) return;
-        h = (h + 1) & (TSLOTS - 1);
-        if (++probes > TSLOTS) return;
-    }
+    if (thas(name, n)) return;
+    if ((tnames + 1) * 4 >= nslots * 3 && !tgrow()) return;
     if (poollen + n + 1 > poolcap) {
         long cap = poolcap ? poolcap * 2 : 8192;
         char *p = AllocVec(cap, MEMF_ANY);
@@ -92,40 +120,45 @@ static void tadd(const char *name, int n)
     }
     memcpy(pool + poollen, name, n);
     pool[poollen + n] = 0;
-    slot[h] = poollen + 1;
+    tput(poollen);
     poollen += n + 1;
     tnames++;
 }
 
-static int thas(const char *name, int n)
-{
-    ULONG h = hash(name, n) & (TSLOTS - 1);
-    int probes = 0;
-    while (slot[h]) {
-        const char *s = pool + slot[h] - 1;
-        if ((int)strlen(s) == n && ieq(s, name, n)) return 1;
-        h = (h + 1) & (TSLOTS - 1);
-        if (++probes > TSLOTS) break;
-    }
-    return 0;
-}
+/* The drawers commands come from: the Path's, then every drawer of C:
+ * (a multi-assign has several). The Path's locks are the CLI's (not ours
+ * to unlock); C:'s are copies of our own, taken again only when C: is
+ * assigned elsewhere (SameLock), so a check costs no disk. */
+static BPTR cdir[MAXC];
+static int ncdir;
 
-/* The drawers commands come from: the Path's, then C:. The locks are the
- * CLI's (not to be unlocked), C:'s our own. */
-static BPTR clock_;
+static void cdirs(void)
+{
+    struct DevProc *dp = NULL;
+    BPTR now[MAXC];
+    int n = 0, i, same;
+    APTR win = csh.me->pr_WindowPtr;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    while (n < MAXC && (dp = GetDeviceProc("C:", dp))) {
+        if (dp->dvp_Lock) now[n++] = dp->dvp_Lock;
+        if (!(dp->dvp_Flags & DVPF_ASSIGN)) break;
+    }
+    if (dp) FreeDeviceProc(dp);
+    csh.me->pr_WindowPtr = win;
+    same = n == ncdir;
+    for (i = 0; i < n && same; i++) same = SameLock(now[i], cdir[i]) == LOCK_SAME;
+    if (same) return;
+    for (i = 0; i < ncdir; i++) UnLock(cdir[i]);
+    for (ncdir = i = 0; i < n; i++) if ((cdir[ncdir] = DupLock(now[i]))) ncdir++;
+}
 
 static int gatherdirs(BPTR *d)
 {
     struct pathnode *pn;
-    int n = 0;
-    for (pn = BADDR(csh.cli->cli_CommandDir); pn && n < MAXDIRS - 1; pn = BADDR(pn->next)) d[n++] = pn->lock;
-    if (!clock_) {
-        APTR win = csh.me->pr_WindowPtr;
-        csh.me->pr_WindowPtr = (APTR)-1;
-        clock_ = Lock("C:", SHARED_LOCK);
-        csh.me->pr_WindowPtr = win;
-    }
-    if (clock_) d[n++] = clock_;
+    int n = 0, i;
+    for (pn = BADDR(csh.cli->cli_CommandDir); pn && n < MAXDIRS - MAXC; pn = BADDR(pn->next)) d[n++] = pn->lock;
+    cdirs();
+    for (i = 0; i < ncdir; i++) d[n++] = cdir[i];
     return n;
 }
 
@@ -146,7 +179,7 @@ static void build(void)
     BPTR d[MAXDIRS];
     int i;
     if (!fib) return;
-    memset(slot, 0, sizeof slot);
+    if (slot) memset(slot, 0, nslots * sizeof *slot);
     poollen = 0; tnames = 0;
     ndirs = gatherdirs(d);
     for (i = 0; i < ndirs; i++) {
@@ -156,6 +189,7 @@ static void build(void)
     }
     FreeDosObject(DOS_FIB, fib);
     built = 1;
+    tplforget();                /* a command may have changed: its keywords read again */
 }
 
 /* At most once a prompt: did the Path or a drawer of it change? */
@@ -179,7 +213,6 @@ static void check(void)
     if (stale) build();
 }
 
-void comp_forget(void) { checked = 0; }
 
 /* ---- what a word is ------------------------------------------------------ */
 
@@ -217,43 +250,84 @@ static int isalias(const char *w, int n)
     return FindVar(name, LV_ALIAS) != NULL;
 }
 
-int comp_kind(const char *word, int n)
+/* A name with a device part whose handler has not started (CD0:, a
+ * floppy drive's DF1:): asking about it would start it, at a key. */
+static int sleeping(const char *name)
 {
-    static char last[256];
-    static int lastkind;
+    const char *c = strchr(name, ':');
+    struct DosList *dl;
+    char dev[32];
+    int n = c ? c - name : 0, r = 0;
+    if (!c || n == 0 || n >= (int)sizeof dev) return 0;
+    memcpy(dev, name, n); dev[n] = 0;
+    dl = LockDosList(LDF_READ | LDF_DEVICES);
+    if ((dl = FindDosEntry(dl, dev, LDF_DEVICES)) && !dl->dol_Task) r = 1;
+    UnLockDosList(LDF_READ | LDF_DEVICES);
+    return r;
+}
+
+/* A few words remembered (a line has several command words: a | b), so a
+ * key that leaves them as they were asks nothing again; forgotten at the
+ * next prompt (comp_forget). */
+#define NKIND 6
+static struct { char name[256]; int kind; } kinds[NKIND];
+static int nkinds, kindnext;
+
+static int kindof(const char *name)
+{
+    int i;
+    for (i = 0; i < nkinds; i++) if (!strcmp(kinds[i].name, name)) return kinds[i].kind;
+    return -1;
+}
+
+static int keep(const char *name, int kind)
+{
+    int i = kindnext;
+    kindnext = (kindnext + 1) % NKIND;
+    if (nkinds < NKIND) nkinds++;
+    strcpy(kinds[i].name, name);
+    kinds[i].kind = kind;
+    return kind;
+}
+
+static int lockable(const char *name)
+{
+    APTR win = csh.me->pr_WindowPtr;
+    BPTR l;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    l = Lock((STRPTR)name, SHARED_LOCK);
+    csh.me->pr_WindowPtr = win;
+    if (l) UnLock(l);
+    return l != 0;
+}
+
+void comp_forget(void) { checked = 0; nkinds = 0; }
+
+/* What a command word is. cheap: the word is still being typed - nothing
+ * that needs a disk (W_NONE then, not remembered). */
+int comp_kind(const char *word, int n, int cheap)
+{
     char name[256];
     int i, k, q = 0;
     for (i = k = 0; i < n && k < (int)sizeof name - 1; i++) {
-        if (word[i] == '"') { q = !q; continue; }
+        if (word[i] == '"' || word[i] == '\'') { q = !q; continue; }
         name[k++] = word[i];
     }
     name[k] = 0;
     if (!k) return W_NONE;
-    if (!strcmp(name, last)) return lastkind;
-    strcpy(last, name);
+    if ((i = kindof(name)) >= 0) return i;
     if (strchr(name, ':') || strchr(name, '/')) {
-        APTR win = csh.me->pr_WindowPtr;
-        BPTR l;
-        csh.me->pr_WindowPtr = (APTR)-1;
-        l = Lock(name, SHARED_LOCK);
-        csh.me->pr_WindowPtr = win;
-        if (l) UnLock(l);
-        return lastkind = l ? W_COMMAND : W_UNKNOWN;
+        if (cheap || sleeping(name)) return W_NONE;
+        return keep(name, lockable(name) ? W_COMMAND : W_UNKNOWN);
     }
-    if (isbuiltin(name, k)) return lastkind = W_BUILTIN;
-    if (isalias(name, k)) return lastkind = W_COMMAND;
-    if ((i = isresident(name, k))) return lastkind = i == -2 ? W_BUILTIN : W_COMMAND;
+    if (isbuiltin(name, k)) return keep(name, W_BUILTIN);
+    if (isalias(name, k)) return keep(name, W_COMMAND);
+    if ((i = isresident(name, k))) return keep(name, i == -2 ? W_BUILTIN : W_COMMAND);
     check();
-    if (thas(name, k)) return lastkind = W_COMMAND;
-    {   /* the current dir comes before the Path */
-        APTR win = csh.me->pr_WindowPtr;
-        BPTR l;
-        csh.me->pr_WindowPtr = (APTR)-1;
-        l = Lock(name, SHARED_LOCK);
-        csh.me->pr_WindowPtr = win;
-        if (l) UnLock(l);
-        return lastkind = l ? W_COMMAND : W_UNKNOWN;
-    }
+    if (thas(name, k)) return keep(name, W_COMMAND);
+    /* the current dir comes before the Path */
+    if (cheap) return W_NONE;
+    return keep(name, lockable(name) ? W_COMMAND : W_UNKNOWN);
 }
 
 /* ---- matches ------------------------------------------------------------- */
@@ -440,6 +514,12 @@ static const char *const internaltpl[][2] = {
 static struct { char name[32]; char *words; } tpl[NTPL];   /* words: names, 0-separated, "" ends */
 static int tplnext;
 
+static void tplforget(void)
+{
+    int i;
+    for (i = 0; i < NTPL; i++) { if (tpl[i].words) os_free(tpl[i].words); tpl[i].words = NULL; }
+}
+
 static int tplpart(const char *s, int n)        /* KEY[=ALIAS]...[/X]... : 1 = with a /X */
 {
     int i = 0, mod = 0;
@@ -525,7 +605,9 @@ static char *tplfromfile(BPTR lock)
     LONG n, total = 0;
     if (!fh) { UnLock(lock); return NULL; }
     best[0] = 0;
-    while (total < 400000 && (n = Read(fh, buf, sizeof buf)) > 0) {
+    /* the template sits in the code or data, near the start in the programs
+     * looked at: 160 KB read at most (a floppy reads that in a few seconds) */
+    while (total < 160000 && (n = Read(fh, buf, sizeof buf)) > 0) {
         LONG i;
         total += n;
         for (i = 0; i < n; i++) {
@@ -633,17 +715,28 @@ static int commandplace(const char *line, int ws)
     return 0;
 }
 
+/* Characters that make a name need quotes on a csh line. */
+static int special(char c)
+{
+    return c == ' ' || c == '\t' || strchr(";|&()<>$`'\"*?[]{}#~\\", c) != NULL;
+}
+
 int comp_complete(char *line, int *len, int *cur, int max)
 {
-    char word[256], dir[256], add[300];
+    char word[256], dir[256], add[LINE_MAX];
     int ws = 0, i, q = 0, n, wl, dl = 0, type, shared, o;
     const char *p;
     for (i = 0; i < *cur; i++) {
         char c = line[i];
-        if (c == '"') q = !q;
-        else if (!q && (c == ' ' || c == '\t' || c == ';' || c == '|' || c == '&' || c == '(' || c == '>' || c == '<')) ws = i + 1;
+        if (q) { if (c == q) q = 0; }
+        else if (c == '"' || c == '\'') q = c;
+        else if (c == ' ' || c == '\t' || c == ';' || c == '|' || c == '&' || c == '(' || c == '>' || c == '<') ws = i + 1;
     }
-    for (i = ws, wl = 0; i < *cur && wl < (int)sizeof word - 1; i++) if (line[i] != '"') word[wl++] = line[i];
+    for (i = ws, wl = 0; i < *cur; i++) {
+        if (line[i] == '"' || line[i] == '\'') continue;
+        if (wl >= (int)sizeof word - 1) { term_outs("\a"); return 0; }    /* too long to complete */
+        word[wl++] = line[i];
+    }
     word[wl] = 0;
     nm = mlen = 0;
     if (word[0] == '$') {
@@ -698,18 +791,26 @@ int comp_complete(char *line, int *len, int *cur, int max)
         type = -1;
         if (shared <= n) { showlist(); return 1; }
     }
-    /* the word again: the dir typed, the name as the match spells it, its ending */
+    /* the word again: the dir typed, the name as the match spells it, its
+     * ending; in quotes when a character of it means something to csh
+     * ('...' when one means something inside "..." too) */
     {
         int needq = 0, k;
-        for (k = 0; k < shared; k++) if (mname[0][k] == ' ') needq = 1;
-        for (k = 0; k < dl; k++) if (dir[k] == ' ') needq = 1;
+        char qc = '"';
+        if (word[0] != '$') {
+            for (k = 0; k < shared; k++) if (special(mname[0][k])) needq = 1;
+            for (k = 0; k < dl; k++) if (special(dir[k])) needq = 1;
+            for (k = 0; k < shared && needq; k++) if (strchr("$`\"\\", mname[0][k])) qc = '\'';
+            for (k = 0; k < dl && needq; k++) if (strchr("$`\"\\", dir[k])) qc = '\'';
+        }
+        if (dl + shared + 4 >= (int)sizeof add) { term_outs("\a"); return 0; }
         o = 0;
-        if (needq) add[o++] = '"';
+        if (needq) add[o++] = qc;
         memcpy(add + o, dir, dl); o += dl;
         memcpy(add + o, mname[0], shared); o += shared;
         if (type == 1) add[o++] = '/';
         else if (type == 0 && word[0] == '$' && dl == 2) add[o++] = '}';
-        if (needq && type != 1 && type >= 0) add[o++] = '"';
+        if (needq && type != 1 && type >= 0) add[o++] = qc;
         if (type == 0) add[o++] = ' ';
         add[o] = 0;
     }
@@ -720,4 +821,18 @@ int comp_complete(char *line, int *len, int *cur, int max)
     *cur = ws + o;
     line[*len] = 0;
     return 1;
+}
+
+/* csh ends: the tables, the matches, the keywords freed; C:'s locks back. */
+void comp_end(void)
+{
+    int i;
+    if (pool) FreeVec(pool);
+    if (slot) FreeVec(slot);
+    if (mpool) FreeVec(mpool);
+    pool = NULL; slot = NULL; mpool = NULL;
+    poollen = poolcap = 0; nslots = tnames = 0; built = 0;
+    for (i = 0; i < ncdir; i++) UnLock(cdir[i]);
+    ncdir = 0;
+    tplforget();
 }

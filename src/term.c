@@ -85,7 +85,9 @@ static int kq[KQ], kh, kt;
 static UBYTE ibuf[256];
 static int ilen;
 static char *paste;
-static int pastelen, pastecap, inpaste;
+static int pastelen, pastecap, inpaste, pasteidle;
+static int asking;              /* term_open's questions: CSI row;col R is the cursor, not a key */
+int term_col0 = 1;              /* the cursor's column when the prompt began (1 = the left edge) */
 
 static void push(int key)
 {
@@ -140,6 +142,7 @@ static void csi(const int *p, int np, int priv, int inter, int f, int fromamiga)
         return;
     }
     if (priv) { if (priv == '?' && f == '~') push(K_HELP); return; }
+    if (asking && f == 'R' && np >= 2) { term_col0 = p[1]; return; }   /* the answer to CSI 6n */
     switch (f) {
     case 'A': push(K_UP | m); break;
     case 'B': push(K_DOWN | m); break;
@@ -312,7 +315,14 @@ static int collect(int block)
         }
         wpending = 0;
         back = 1;
-        if (wpkt->dp_Res1) readnow();
+        if (wpkt->dp_Res1) { pasteidle = 0; readnow(); }
+        else if (inpaste && ++pasteidle >= 20) {
+            /* a paste whose end mark never came (2 s quiet): ended here, or
+             * every key after it would go into it */
+            if (ilen) { pasteadd(ibuf, ilen); ilen = 0; }
+            inpaste = 0; pasteidle = 0;
+            push(K_PASTE);
+        }
     }
     return back;
 }
@@ -385,7 +395,12 @@ int term_possible(BPTR in, BPTR out)
 }
 
 /* Raw mode for one line; the width asked each time (the window may have
- * changed while a command ran). */
+ * changed while a command ran), and where the cursor is (a command's last
+ * line without a line end: the prompt goes below it, not over it). A
+ * console that never answered is not asked again (no second's wait at
+ * every prompt). */
+static int answers = 1;
+
 int term_open(BPTR in, BPTR out)
 {
     int tries;
@@ -403,19 +418,27 @@ int term_open(BPTR in, BPTR out)
     if (term_cterm) term_outs("\x1b[?2004h\x1b[?7727h");  /* marked pastes (and xterm's modified
                                                  * arrows); keys typed while a command runs
                                                  * stay keys for the prompt (CTerm 0.3b33) */
-    term_outs("\x9b" "0 q");                   /* the window bounds, answered with CSI ... r */
-    term_flush();
-    for (tries = 0; tries < 10; tries++) {
-        int got = 0, i;
-        if (!WaitForChar(tin, 100000)) continue;
-        {
-            LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
-            if (n > 0) ilen += n;
+    term_col0 = 1;
+    if (answers) {
+        int got = 0;
+        term_outs("\x9b" "6n");                /* the cursor, answered with CSI row;col R (first) */
+        term_outs("\x9b" "0 q");               /* the window bounds, answered with CSI ... r */
+        term_flush();
+        asking = 1;
+        for (tries = 0; tries < 10 && !got; tries++) {
+            int i;
+            if (!WaitForChar(tin, 100000)) continue;
+            {
+                LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
+                if (n > 0) ilen += n;
+            }
+            for (i = 0; i + 1 < ilen; i++) if (ibuf[i] == ' ' && ibuf[i + 1] == 'r') got = 1;
+            parse(0);
         }
-        for (i = 0; i + 1 < ilen; i++) if (ibuf[i] == ' ' && ibuf[i + 1] == 'r') got = 1;
-        parse(0);
-        if (got) break;
+        asking = 0;
+        if (!got) answers = 0;
     }
+    if (term_col0 > 1) term_outs("\n");      /* zsh's way: the last line had no line end */
     /* the size report is not a key: drop resize news it caused */
     {
         int i, j = kh;

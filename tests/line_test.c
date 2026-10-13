@@ -128,6 +128,16 @@ int main(void)
     parse(">RAM:pre Echo first", "Echo|first||RAM:pre||");
     parse("Echo x >\"RAM:a b\"", "Echo|x||RAM:a b||");
     parse("Cmd <>CON:0/0/100/100/t", "Cmd||CON:0/0/100/100/t|CON:0/0/100/100/t||b");
+    parse("Cmd <>a >b", "Cmd||a|b||");
+    parse("Cmd <>a <b", "Cmd||b|a||");
+    {   /* a command word or a file name over 255 bytes: refused, never cut */
+        char l[600];
+        struct cmdline c;
+        memset(l, 'x', 300); l[300] = 0;
+        ran++; if (line_parse(l, &c) != -1) { printf("FAIL parse: a 300-byte command word was taken\n"); bad++; }
+        strcpy(l, "Cmd >"); memset(l + 5, 'y', 300); l[305] = 0;
+        ran++; if (line_parse(l, &c) != -1) { printf("FAIL parse: a 300-byte file name was taken\n"); bad++; }
+    }
     parse("Echo a=b \"q=r\"", "Echo|a=b \"q=r\"||||");
     parse("; only a comment", "|||||");
     parse("", "|||||");
