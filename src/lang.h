@@ -78,6 +78,7 @@ long sh_rc(void);
 int sh_getpos(int i, char **s);                  /* positional parameter i (1..) */
 int sh_npos(void);
 void sh_setpos(int argc, char **argv);           /* set's / shift's own */
+int sh_local(const char *name, const char *val); /* local: -1 outside a function */
 extern int sh_opt_e, sh_opt_x;
 extern int sh_break, sh_continue, sh_return, sh_exiting;
 extern long sh_exitrc;

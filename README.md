@@ -25,4 +25,5 @@ Start with [docs/design.md](docs/design.md), "Start here".
 On the Amiga: `csh` in a Shell or CTerm tab; `exit` goes back to the ROM Shell. CTerm
 0.3b32 can start csh in every new tab (Settings, Files: "Then runs", or `CTerm SHELL csh`).
 `csh FROM script [args]` runs a script (`#!csh` on its first line: the csh language),
-`csh COMMAND "text"` runs csh text and ends.
+`csh COMMAND "text"` runs csh text and ends. Your own aliases and settings go in
+`S:CShell-Startup` (csh's language), run once at the first prompt.

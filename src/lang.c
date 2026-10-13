@@ -664,6 +664,39 @@ static int npos;
 static char *pos0 = "csh";
 
 typedef struct Func { struct Func *next; char *name; Node *body; Arena ar; } Func;
+
+/* local: the values a function's call put aside, given back at its end */
+typedef struct Saved { struct Saved *next; char *name, *val; int had; } Saved;
+static Saved **frame;
+
+int sh_local(const char *name, const char *val)
+{
+    Saved *s;
+    if (!frame) return -1;
+    for (s = *frame; s; s = s->next) if (!strcmp(s->name, name)) break;
+    if (!s && (s = os_alloc(sizeof *s + strlen(name) + 1))) {
+        char *v = os_alloc(LINE_MAX);
+        s->name = (char *)(s + 1);
+        strcpy(s->name, name);
+        if (v && os_getvar(name, v, LINE_MAX) >= 0) { s->had = 1; s->val = v; }
+        else if (v) os_free(v);
+        s->next = *frame;
+        *frame = s;
+    }
+    if (val) os_setvar(name, val, 0); else os_unsetvar(name);
+    return 0;
+}
+
+static void unframe(Saved *s)
+{
+    while (s) {
+        Saved *n = s->next;
+        if (s->had) os_setvar(s->name, s->val, 0); else os_unsetvar(s->name);
+        if (s->val) os_free(s->val);
+        os_free(s);
+        s = n;
+    }
+}
 static Func *funcs;
 
 long sh_rc(void) { return rc; }
@@ -1177,12 +1210,117 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
 }
 
 /* A word as fields (split = word splitting of unquoted expansions). */
+/* ~ at a word's start: $HOME, else SYS: (the Amiga has no home drawer of
+ * its own), then the rest of the word; "~/x" and HOME "Work:" give Work:x. */
+static void expand_word(Exp *e, const char *w)
+{
+    if (w[0] == '~' && (w[1] == 0 || w[1] == '/')) {
+        char home[256];
+        int n = os_getvar("HOME", home, sizeof home);
+        if (n <= 0) { strcpy(home, "SYS:"); n = 4; }
+        sput(&e->cur, home, n);
+        e->have = 1;
+        w++;
+        if (*w == '/' && (home[n - 1] == ':' || home[n - 1] == '/')) w++;
+    }
+    expand_into(e, w, strlen(w), 0);
+    endfield(e);
+}
+
+/* The first {a,b} or {1..5} of a word outside quotes (not ${...}): its
+ * braces' places, 1 = a list, 2 = a sequence; 0 = none. */
+static int bracefind(const char *w, int *open, int *close)
+{
+    int i, q = 0;
+    for (i = 0; w[i]; i++) {
+        char c = w[i];
+        if (q) { if (c == q) q = 0; else if (c == '\\' && q == '"' && w[i + 1]) i++; continue; }
+        if (c == '\'' || c == '"') { q = c; continue; }
+        if (c == '\\' && w[i + 1]) { i++; continue; }
+        if (c == '{' && (i == 0 || w[i - 1] != '$')) {
+            int d = 0, j, comma = 0, q2 = 0;
+            for (j = i; w[j]; j++) {
+                char k = w[j];
+                if (q2) { if (k == q2) q2 = 0; continue; }
+                if (k == '\'' || k == '"') { q2 = k; continue; }
+                if (k == '\\' && w[j + 1]) { j++; continue; }
+                if (k == '{') d++;
+                else if (k == '}' && --d == 0) break;
+                else if (k == ',' && d == 1) comma = 1;
+            }
+            if (!w[j]) return 0;
+            *open = i; *close = j;
+            if (comma) return 1;
+            {   /* {a..b}: numbers, or one letter each */
+                const char *b = w + i + 1, *dots = strstr(b, "..");
+                if (dots && dots < w + j && dots > b && dots + 2 < w + j) return 2;
+            }
+            i = j;              /* {x} alone: left as it is */
+        }
+    }
+    return 0;
+}
+
+static void braces(Exp *e, const char *w, int depth)
+{
+    int o, c, kind = depth < 8 && e->nf < 2000 ? bracefind(w, &o, &c) : 0;
+    Str t;
+    if (!kind) { expand_word(e, w); return; }
+    memset(&t, 0, sizeof t); t.ar = e->ar;
+    if (kind == 1) {
+        int start = o + 1, i, d = 0, q = 0;
+        for (i = o + 1; i <= c; i++) {
+            char k = w[i];
+            if (q) { if (k == q) q = 0; continue; }
+            if (k == '\'' || k == '"') { q = k; continue; }
+            if (k == '\\' && i < c) { i++; continue; }
+            if (k == '{') d++;
+            else if (k == '}' && d) d--;
+            else if ((k == ',' && !d) || i == c) {
+                t.n = 0;
+                sput(&t, w, o);
+                sput(&t, w + start, i - start);
+                sput(&t, w + c + 1, strlen(w + c + 1));
+                braces(e, t.s, depth + 1);
+                start = i + 1;
+            }
+        }
+        return;
+    }
+    {
+        const char *b = w + o + 1, *dots = strstr(b, "..");
+        int la = dots - b, lb = (w + c) - (dots + 2);
+        long x, y, step;
+        char ab[24], bb[24], num[16];
+        int err1 = 0, err2 = 0, letters;
+        if (la >= (int)sizeof ab || lb >= (int)sizeof bb) { expand_word(e, w); return; }
+        memcpy(ab, b, la); ab[la] = 0;
+        memcpy(bb, dots + 2, lb); bb[lb] = 0;
+        letters = la == 1 && lb == 1 && !(ab[0] >= '0' && ab[0] <= '9') && !(bb[0] >= '0' && bb[0] <= '9');
+        if (letters) { x = (UBYTE_)ab[0]; y = (UBYTE_)bb[0]; }
+        else {
+            x = arith(ab, &err1); y = arith(bb, &err2);
+            if (err1 || err2) { expand_word(e, w); return; }
+        }
+        step = x <= y ? 1 : -1;
+        for (;; x += step) {
+            t.n = 0;
+            sput(&t, w, o);
+            if (letters) { num[0] = (char)x; sput(&t, num, 1); }
+            else sput(&t, num, ltoa_(x, num));
+            sput(&t, w + c + 1, strlen(w + c + 1));
+            braces(e, t.s, depth + 1);
+            if (x == y || e->nf >= 2000) break;
+        }
+    }
+}
+
 static void expand(Exp *e, const char *word, int split)
 {
     e->split = split;
     e->cur.ar = e->ar;
-    expand_into(e, word, strlen(word), 0);
-    endfield(e);
+    if (split) braces(e, word, 0);      /* braces only where words are made */
+    else expand_word(e, word);
 }
 
 /* A word as one string (assignments, redirection targets, case). */
@@ -1377,7 +1515,13 @@ static long run_simple(Node *n)
             if (depth > 40) { sh_error("too deep:", name); r = 20; goto done; }
             pos = argv + 1; npos = e.nf - 1; pos0 = name;
             depth++;
-            r = exec(f->body);
+            {
+                Saved *mine = NULL, **outer = frame;
+                frame = &mine;
+                r = exec(f->body);
+                frame = outer;
+                unframe(mine);
+            }
             depth--;
             if (sh_return) { sh_return = 0; r = rc; }
             pos = opos; npos = onpos; pos0 = opos0;

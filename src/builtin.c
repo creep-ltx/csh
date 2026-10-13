@@ -14,12 +14,12 @@
 
 enum { B_EXIT, B_RETURN, B_BREAK, B_CONTINUE, B_SHIFT, B_TRUE, B_FALSE, B_COLON, B_ECHO, B_PRINTF,
        B_TEST, B_BRACKET, B_READ, B_SOURCE, B_DOT, B_EVAL, B_EXPORT, B_UNSET, B_SET, B_ALIAS,
-       B_HISTORY, B_TIME, B_PWD, B_JOBS, B_FG, B_KILL, B_WAIT, B_COUNT };
+       B_HISTORY, B_TIME, B_PWD, B_JOBS, B_FG, B_KILL, B_WAIT, B_LOCAL, B_COUNT };
 
 const char *const builtin_names[] = {
     "exit", "return", "break", "continue", "shift", "true", "false", ":", "echo", "printf",
     "test", "[", "read", "source", ".", "eval", "export", "unset", "set", "alias",
-    "history", "time", "pwd", "jobs", "fg", "kill", "wait", NULL
+    "history", "time", "pwd", "jobs", "fg", "kill", "wait", "local", NULL
 };
 /* lower case only: an Amiga command of that name in any other case */
 static const char exact[B_COUNT] = { [B_EVAL] = 1, [B_BREAK] = 1, [B_TIME] = 1, [B_WAIT] = 1 };
@@ -475,6 +475,17 @@ long builtin_run(int which, int argc, char **argv)
         if (argc > 1 && argv[1][0] != '%') return NOTMINE;
         if (argc > 1) return job_fg(argv[1]);
         return job_waitall();
+    case B_LOCAL: {
+        int i;
+        for (i = 1; i < argc; i++) {
+            char *eq = strchr(argv[i], '=');
+            int r;
+            if (eq) { *eq = 0; r = sh_local(argv[i], eq + 1); *eq = '='; }
+            else r = sh_local(argv[i], NULL);
+            if (r < 0) { sh_error("local:", "only in a function"); return 10; }
+        }
+        return 0;
+    }
     case B_PWD: {
         char b[256];
         if (!os_pwd(b, sizeof b)) return 10;

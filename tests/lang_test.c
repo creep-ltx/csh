@@ -117,6 +117,22 @@ int main(void)
     run("{ echo a; echo b; }", "a\nb\n");
     run("(echo sub)", "sub\n");
     run("if true\nthen\n  echo multi\nfi\n", "multi\n");
+    /* ~ and braces */
+    run("echo ~ ~/x", "SYS: SYS:x\n");
+    run("HOME=Work:; echo ~ ~/Docs '~' \"~\" a~b", "Work: Work:Docs ~ ~ a~b\n");
+    run("HOME=Work:Me; echo ~/x", "Work:Me/x\n");
+    run("echo a{b,c}d {x,y}{1,2}", "abd acd x1 x2 y1 y2\n");
+    run("echo {1..4} {3..1} {a..c} {-1..1}", "1 2 3 4 3 2 1 a b c -1 0 1\n");
+    run("echo '{a,b}' \"{a,b}\" {a} {} ${HOME:-x}{1,2}", "{a,b} {a,b} {a} {} x1 x2\n");
+    run("echo {a,{b,c}}z", "az bz cz\n");
+    run("Copy file{1,2}.txt RAM:", "[Copy|file1.txt file2.txt RAM:]\n");
+    run("for i in {1..3}; do echo n$i; done", "n1\nn2\nn3\n");
+    run("x={a,b}; echo $x", "{a,b}\n");
+    /* local */
+    run("v=out; f() { local v=in; echo $v; }; f; echo $v", "in\nout\n");
+    run("f() { local w; w=set; echo $w; }; f; echo \"[$w]\"", "set\n[]\n");
+    run("local x=1", "csh: local: only in a function\n");
+    run("v=1; f() { local v=2; g; echo f$v; }; g() { echo g$v; v=3; }; f; echo top$v", "g2\nf3\ntop1\n");
     /* functions */
     run("greet() { echo hello $1; }; greet you", "hello you\n");
     run("f() { echo \"fn $1\"; }; f x\n", "fn x\n");

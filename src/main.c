@@ -145,6 +145,16 @@ static int smain(void)
         if (csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput) break;
         cli->cli_Interactive = inter ? DOSTRUE : DOSFALSE;
         if (inter) {
+            static int startup;
+            if (!startup) {     /* S:CShell-Startup once, at the first prompt (aliases, prompt...) */
+                BPTR l;
+                startup = 1;
+                if ((l = Lock("S:CShell-Startup", SHARED_LOCK))) {
+                    UnLock(l);
+                    lang_source("S:CShell-Startup", 0, NULL);
+                    os_flush();
+                }
+            }
             if (editing < 0) {
                 editing = term_possible(cli->cli_StandardInput, csh.out);
                 if (editing) editor_start();

@@ -22,6 +22,7 @@
 #include <string.h>
 #include "csh.h"
 #include "edit.h"
+#include "lang.h"
 
 struct pathnode { BPTR next; BPTR lock; };
 
@@ -51,6 +52,11 @@ static ULONG hash(const char *s, int n)
     ULONG h = 5381;
     while (n--) h = h * 33 + lc(*s++);
     return h;
+}
+
+static int isdirlock(BPTR l, struct FileInfoBlock *fib)
+{
+    return Examine(l, fib) && fib->fib_DirEntryType > 0;
 }
 
 /* ---- the command table -------------------------------------------------- */
@@ -414,6 +420,202 @@ int comp_listing(void)
     return l;
 }
 
+
+/* ---- a command's keywords, for Tab after it -------------------------------- */
+
+/* The ROM's internal commands live in Kickstart: their templates as the
+ * AmigaDOS manual gives them. */
+static const char *const internaltpl[][2] = {
+    { "CD", "DIR" }, { "Path", "PATH/M,ADD/S,SHOW/S,RESET/S,QUIET/S,REMOVE/S" },
+    { "Echo", "STRING/M,NOLINE/S,FIRST/K/N,LEN/K/N,TO/K" },
+    { "If", "NOT/S,WARN/S,ERROR/S,FAIL/S,EQ/K,GT/K,GE/K,VAL/S,EXISTS/K" },
+    { "Resident", "NAME,FILE,REMOVE/S,ADD/S,REPLACE/S,PURE=FORCE/S,SYSTEM/S" },
+    { "Skip", "LABEL,BACK/S" }, { "Stack", "SIZE/N" }, { "NewShell", "WINDOW,FROM/K" },
+    { "NewCLI", "WINDOW,FROM/K" }, { "Execute", "FILE/A" }, { "Failat", "RCLIM/N" },
+    { "Quit", "RC/N" }, { "Run", "COMMAND/F" }, { "Ask", "PROMPT/A" },
+    { NULL, NULL }
+};
+
+#define NTPL 40
+static struct { char name[32]; char *words; } tpl[NTPL];   /* words: names, 0-separated, "" ends */
+static int tplnext;
+
+static int tplpart(const char *s, int n)        /* KEY[=ALIAS]...[/X]... : 1 = with a /X */
+{
+    int i = 0, mod = 0;
+    if (n < 1 || !((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'))) return -1;
+    while (i < n && s[i] != '/') {
+        char c = s[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '=')) return -1;
+        i++;
+    }
+    while (i < n) {
+        char m;
+        if (s[i] != '/' || i + 1 >= n) return -1;
+        m = s[i + 1] | 32;
+        if (!strchr("aksnmft", m)) return -1;
+        mod = 1;
+        i += 2;
+    }
+    return mod;
+}
+
+/* How good a template the text is: the parts that read as ReadArgs parts
+ * from its start on (stopping at the first that does not), if one at least
+ * has a /X; *len gets how much of the text they are. */
+static int tplscore(const char *s, int n, int *len)
+{
+    int parts = 0, mods = 0, start = 0, i;
+    *len = 0;
+    for (i = 0; i <= n; i++) {
+        if (i == n || s[i] == ',') {
+            int r = tplpart(s + start, i - start);
+            if (r < 0) break;
+            mods += r; parts++;
+            *len = i;
+            start = i + 1;
+        }
+    }
+    return mods ? parts : 0;
+}
+
+/* The keywords worth offering: /S switches and /K keys (not the places of
+ * a file or a number), by their longest name. */
+static char *tplwords(const char *t)
+{
+    char *w = os_alloc(strlen(t) + 2), *o = w;
+    const char *p = t;
+    if (!w) return NULL;
+    while (*p) {
+        const char *e = strchr(p, ','), *eq, *sl;
+        int n = e ? e - p : (int)strlen(p);
+        int k;
+        for (eq = p; eq < p + n && *eq != '=' && *eq != '/'; eq++) ;
+        sl = memchr(p, '/', n);
+        k = 0;
+        if (sl) {
+            const char *m;
+            for (m = sl; m < p + n; m++) if (m[0] == '/' && ((m[1] | 32) == 's' || (m[1] | 32) == 'k')) k = 1;
+        }
+        if (k) {        /* of NAME=OTHER, the longer (PAT, not P; LFORMATQUOTE, not LFQ) */
+            const char *best = p, *q = p, *end = sl ? sl : p + n;
+            int bl = 0;
+            while (q < end) {
+                const char *e2 = q;
+                while (e2 < end && *e2 != '=') e2++;
+                if (e2 - q > bl) { bl = e2 - q; best = q; }
+                q = e2 < end ? e2 + 1 : end;
+            }
+            memcpy(o, best, bl); o += bl; *o++ = 0;
+        }
+        p += n;
+        if (*p == ',') p++;
+    }
+    *o = 0;
+    return w;
+}
+
+/* The best template in a program file (the longest run of ReadArgs parts). */
+static char *tplfromfile(BPTR lock)
+{
+    BPTR fh = OpenFromLock(lock);
+    static char buf[4096];
+    char best[320], run[320];
+    int bestscore = 0, rl = 0;
+    LONG n, total = 0;
+    if (!fh) { UnLock(lock); return NULL; }
+    best[0] = 0;
+    while (total < 400000 && (n = Read(fh, buf, sizeof buf)) > 0) {
+        LONG i;
+        total += n;
+        for (i = 0; i < n; i++) {
+            char c = buf[i];
+            if (((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/' || c == ',' || c == '=' || c == '_' || c == '-') && rl < (int)sizeof run - 1) {
+                run[rl++] = c;
+                continue;
+            }
+            if (rl >= 3) {
+                /* a stray byte or two may sit before it ("3DIR/M,..." in 3.2's List) */
+                int k;
+                for (k = 0; k < 4 && k < rl; k++) {
+                    int len, sc = tplscore(run + k, rl - k, &len);
+                    if (sc > bestscore) { bestscore = sc; memcpy(best, run + k, len); best[len] = 0; }
+                }
+            }
+            rl = 0;
+        }
+    }
+    Close(fh);
+    return bestscore ? tplwords(best) : NULL;
+}
+
+/* A command's file: as typed with a drawer, else the current dir, the
+ * Path, C: (the search of run.c); a lock, or 0. */
+static BPTR cmdfile(const char *name)
+{
+    struct FileInfoBlock *fib;
+    struct pathnode *pn;
+    APTR win = csh.me->pr_WindowPtr;
+    BPTR l = 0;
+    char cn[64];
+    if (!(fib = AllocDosObject(DOS_FIB, NULL))) return 0;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    if ((l = Lock((STRPTR)name, SHARED_LOCK)) && !isdirlock(l, fib)) goto done;
+    if (l) { UnLock(l); l = 0; }
+    if (strchr(name, ':') || strchr(name, '/')) goto done;
+    for (pn = BADDR(csh.cli->cli_CommandDir); pn; pn = BADDR(pn->next)) {
+        BPTR old = CurrentDir(pn->lock);
+        l = Lock((STRPTR)name, SHARED_LOCK);
+        CurrentDir(old);
+        if (l && !isdirlock(l, fib)) goto done;
+        if (l) { UnLock(l); l = 0; }
+    }
+    if (strlen(name) < sizeof cn - 3) {
+        strcpy(cn, "C:"); strcat(cn, name);
+        if ((l = Lock(cn, SHARED_LOCK)) && isdirlock(l, fib)) { UnLock(l); l = 0; }
+    }
+done:
+    csh.me->pr_WindowPtr = win;
+    FreeDosObject(DOS_FIB, fib);
+    return l;
+}
+
+static const char *cmdwords(const char *name)
+{
+    int i;
+    BPTR l;
+    char *w = NULL;
+    for (i = 0; i < NTPL; i++) if (tpl[i].words && ieq(tpl[i].name, name, strlen(name) + 1)) return tpl[i].words;
+    for (i = 0; internaltpl[i][0]; i++)
+        if ((int)strlen(internaltpl[i][0]) == (int)strlen(name) && ieq(internaltpl[i][0], name, strlen(name)) && isresident(name, strlen(name)) == -2) {
+            w = tplwords(internaltpl[i][1]);
+            break;
+        }
+    if (!w && (l = cmdfile(name))) w = tplfromfile(l);
+    if (!w && !(w = os_alloc(2))) return NULL;          /* none: remembered too */
+    if (strlen(name) >= sizeof tpl[0].name) { return w; }
+    i = tplnext; tplnext = (tplnext + 1) % NTPL;
+    if (tpl[i].words) os_free(tpl[i].words);
+    strcpy(tpl[i].name, name);
+    tpl[i].words = w;
+    return w;
+}
+
+/* The command whose argument the word at ws is (the first word since the
+ * last ; | & or the line's start). */
+static int cmdof(const char *line, int ws, char *out, int size)
+{
+    int s = ws, i, n;
+    while (s > 0 && line[s - 1] != ';' && line[s - 1] != '|' && line[s - 1] != '&' && line[s - 1] != '(') s--;
+    while (s < ws && (line[s] == ' ' || line[s] == '\t')) s++;
+    for (i = s; i < ws && line[i] != ' ' && line[i] != '\t'; i++) ;
+    n = i - s;
+    if (n <= 0 || n >= size) return 0;
+    memcpy(out, line + s, n); out[n] = 0;
+    if (out[0] == '"') return 0;
+    return 1;
+}
+
 /* Is the word starting at ws in a command's place? */
 static int commandplace(const char *line, int ws)
 {
@@ -459,7 +661,16 @@ int comp_complete(char *line, int *len, int *cur, int max)
         } else {
             dir[0] = 0;
             if (commandplace(line, ws)) mcommands(word, wl);
-            else { mfiles("", word, wl); mdevices(word, wl); }
+            else {
+                char cmd[64];
+                mfiles("", word, wl);
+                mdevices(word, wl);
+                if (cmdof(line, ws, cmd, sizeof cmd)) {    /* the command's own keywords */
+                    const char *k = cmdwords(cmd);
+                    for (; k && *k; k += strlen(k) + 1)
+                        if (iprefix(k, word, wl)) madd(k, strlen(k), 0);
+                }
+            }
             if (commandplace(line, ws)) {
                 /* drawers here too: a drawer typed alone is a CD */
                 int before = nm, k;

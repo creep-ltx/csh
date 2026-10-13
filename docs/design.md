@@ -48,7 +48,12 @@ read or memory is not yet proven on the 3.2 ROM.*
    **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b1, C:ls 0.1 (the user's
    CUtils ls kept as C:ls-cutils.bak), CTerm 0.3b32 with its parts in Work:Utils/CTerm (0.3b31
    kept as CTerm-0.3b31.bak and Parts-0.3b31.bak), and `shell=csh` in ENVARC:/ENV:CTerm.prefs:
-   every new CTerm tab starts csh. **Next:** Ahiru and Maki reading `ENVARC:FileColours`;
+   every new CTerm tab starts csh.
+   **Added 2026-10-13 evening:** `~` (HOME, else SYS:), `{a,b}` and `{1..5}`, `local` in
+   functions, `S:CShell-Startup` (run once at the first prompt, the csh language), Tab
+   completes a command's own keywords (read from its file: the longest run of ReadArgs parts,
+   a few stray bytes before it allowed; the ROM's internal commands from a table).
+   **Next:** Ahiru and Maki reading `ENVARC:FileColours`;
    loading parts on demand (csh is 80 KB; the language could be a part); what the user finds.
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
