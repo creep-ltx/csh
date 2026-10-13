@@ -12,11 +12,12 @@ programs.
 
 **State: 0.1b1 (2026-10-13)** - runs commands and Amiga scripts exactly as the ROM Shell
 does; its own prompt (colours as you type, suggestions from history, Ctrl+R, Tab, every key in
-`ENVARC:CShell/csh.keys`); the bash-style language at the prompt and in `#!csh` scripts. Faster
-than the ROM Shell in every measured case. Pipes and `&` are still handed to the ROM Shell.
+`ENVARC:CShell/csh.keys`); the bash-style language at the prompt and in `#!csh` scripts. Pipes, `&` and
+jobs of its own; `ls` coloured by kind (`ENVARC:FileColours`, shared with the terminal family).
+Faster than the ROM Shell in every measured case.
 Start with [docs/design.md](docs/design.md), "Start here".
 
-    make            builds csh (bebbo's gcc in ~/opt/amiga)
+    make            builds csh and ls (bebbo's gcc in ~/opt/amiga)
     make test       the line rules and the language, checked on the PC
     tests/pairs.sh  ROM Shell and csh side by side in FS-UAE (W=probe/a: the A1200)
     tests/langtest.sh, tests/bench.sh   the language on the real ROM; the speed

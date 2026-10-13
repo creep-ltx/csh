@@ -1,0 +1,47 @@
+-- plain
+dir
+file9.txt
+file10.txt
+tool
+Zebra.lha
+-- F
+dir/
+file9.txt
+file10.txt
+tool*
+Zebra.lha
+-- a
+dir
+file9.txt
+file10.txt
+pic.info
+tool
+Zebra.lha
+-- S
+Zebra.lha
+file9.txt
+file10.txt
+tool
+dir
+-- r
+Zebra.lha
+tool
+file10.txt
+file9.txt
+dir
+-- #?
+RAM:lst/file9.txt
+RAM:lst/file10.txt
+-- *
+RAM:lst/file9.txt
+RAM:lst/file10.txt
+-- file
+RAM:lst/file9.txt
+-- d
+RAM:lst/dir
+RAM:nothere: object not found
+rc 5
+ls: RAM:lst/#?.none: nothing matches
+rc 5
+-- R
+RAM:lst/dir:

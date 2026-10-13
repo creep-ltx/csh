@@ -168,6 +168,15 @@ static int smain(void)
                 /* opened first: it finds out whether this is CTerm, which the
                  * prompt's colours depend on */
                 if (!term_open(cli->cli_StandardInput, csh.out)) { editing = 0; continue; }
+                {   /* the window's width for programs like ls (only when it changed) */
+                    static int lastcols;
+                    if (term_cols != lastcols) {
+                        char b[12];
+                        ltoa10(term_cols, b);
+                        SetVar("COLUMNS", b, -1, LV_VAR | GVF_LOCAL_ONLY);
+                        lastcols = term_cols;
+                    }
+                }
                 n = edit_line(lang_more ? "> " : prompt_text(1), line, sizeof line - 1);
                 term_close();
                 if (n == -2) { lang_reset(); continue; }

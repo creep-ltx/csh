@@ -10,7 +10,10 @@ LDFLAGS = -noixemul -s
 SRC     = src/main.c src/run.c src/line.c src/term.c src/keys.c src/prefs.c src/hist.c src/comp.c src/edit.c src/lang.c src/builtin.c src/os.c src/job.c
 OBJ     = $(patsubst src/%.c,build/%.o,$(SRC))
 
-all: csh
+all: csh ls
+
+ls: tools/ls.c
+	$(CC) $(CFLAGS) $(LDFLAGS) tools/ls.c -o $@
 
 csh: $(OBJ)
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
@@ -23,6 +26,6 @@ test:
 	tests/run.sh
 
 clean:
-	rm -rf build csh
+	rm -rf build csh ls
 
 .PHONY: all test clean

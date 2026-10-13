@@ -6,3 +6,4 @@ tests/probe/perr
 tests/probe/execlf
 build/
 /csh
+/ls

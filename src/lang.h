@@ -22,6 +22,7 @@ long os_run(struct cmdline *c);  /* an Amiga command (searched, run); its rc */
 long os_rom(const char *line, int background);   /* a line handed to the ROM Shell */
 void os_write(const char *s, int n);             /* to the output of the moment */
 void os_flush(void);                             /* what os_write gathered, sent */
+void os_tty(const char *s, int n);               /* to csh's own console, whatever is redirected (time) */
 int os_readline(char *buf, int size);            /* from the input of the moment; -1 = end */
 void *os_redir(struct cmdline *c);               /* open + select; NULL = failed (said) */
 void os_unredir(void *save);

@@ -122,6 +122,7 @@ void *os_redir(struct cmdline *c)
     return (void *)1;
 }
 void os_flush(void) { }
+void os_tty(const char *s, int n) { os_write(s, n); }
 void os_unredir(void *s) { (void)s; os_write("{/redir}", 8); }
 
 void *os_capture(void)

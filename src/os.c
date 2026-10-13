@@ -37,6 +37,12 @@ void os_write(const char *s, int n)
     olen += n;
 }
 
+void os_tty(const char *s, int n)
+{
+    os_flush();
+    Write(csh.out, (APTR)s, n);
+}
+
 void *os_alloc(long n) { return AllocVec(n, MEMF_ANY | MEMF_CLEAR); }
 void os_free(void *p) { if (p) FreeVec(p); }
 

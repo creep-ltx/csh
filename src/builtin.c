@@ -447,7 +447,7 @@ long builtin_run(int which, int argc, char **argv)
         r = lang_eval(t);
         os_free(t);
         t1 = os_ticks() - t0;                    /* fiftieths of a second */
-        sh_print("real ");
+        os_tty("real ", 5);
         b[0] = 0;
         {
             long s = t1 / 50, h = (t1 % 50) * 2;
@@ -458,7 +458,7 @@ long builtin_run(int which, int argc, char **argv)
             *o++ = '.'; *o++ = '0' + h / 10; *o++ = '0' + h % 10; *o++ = 's'; *o++ = '\n'; *o = 0;
         }
         l = strlen(b);
-        sh_printn(b, l);
+        os_tty(b, l);                            /* the console, as bash's goes to stderr */
         return r;
     }
     case B_JOBS: return job_list();

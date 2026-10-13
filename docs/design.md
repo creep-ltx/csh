@@ -1,6 +1,6 @@
 # CShell (csh): a modern shell for the Amiga
 
-*Design written 2026-10-12 with the user; steps 1-4 built 2026-10-13 (csh 0.1b1). Everything here is proposed unless it
+*Design written 2026-10-12 with the user; steps 1-6 built 2026-10-13 (csh 0.1b1, ls 0.1). Everything here is proposed unless it
 says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
 AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
 read or memory is not yet proven on the 3.2 ROM.*
@@ -22,18 +22,29 @@ read or memory is not yet proven on the 3.2 ROM.*
      `ENV:CShell/history` (shared between tabs, saved to ENVARC every 20 lines and at the end).
    - **Step 4, the csh language** (`lang.c`, `builtin.c`, `os.c`): at the prompt and in `#!csh`
      scripts. The words go back to Amiga commands as an Amiga line (`amigaarg()`).
-4. **Testing:** `make test` (PC, ASan: 57 line-rule and 96 language checks, `tests/fakeos.c`
-   stands in for the Amiga); `tests/pairs.sh` (ROM Shell vs csh, 11 scripts), `tests/langtest.sh`
-   (`tests/lang/*.csh` vs `.want` on the real ROM), `tests/bench.sh` (speed against the ROM
-   Shell). All run against `CTerm/tests/files/uae.sh`'s FS-UAE (`tests/probe/w`); with
-   `W=probe/a` on the A1200 (shared: check `wasabi ps` first, clean RAM: after).
+   - **Step 5, pipes and jobs** (`job.c`): each Amiga command of a pipe in a process of its own
+     (NP_Cli) joined by PIPE:, csh finding and loading it (run_prepare); the last stage in csh
+     itself, with the console's breaks pointed at a relay task so Ctrl-C reaches every stage; a
+     csh stage (built-in, loop) last reads the pipe in csh, in the middle writes a T: file.
+     Amiga-script pipes run the same way, ROM-exact (every stage looked for first). `&`, `jobs`,
+     `fg`, `kill`, `wait` (`wait 5` is the Amiga's Wait); "[n] Done" at the next prompt; exit
+     with jobs running warns once, then leaves csh's code in memory for them.
+   - **Step 6, `ls` and the family colour file** (`tools/ls.c`, built as `ls`, 14 KB): CUtils'
+     ls in C (`-1aAdFhlrRSt`, columns from `$COLUMNS` which csh keeps, else the console asked;
+     natural order; ExAll), coloured by kind from **`ENVARC:FileColours`** (`KIND CTERM,PLAIN`
+     SGR numbers as in csh.prefs, `.EXT KIND`), written with the defaults when missing.
+4. **Testing:** `make test` (PC, ASan: 57 line-rule and 105 language checks, `tests/fakeos.c`
+   stands in for the Amiga); `tests/pairs.sh` (ROM Shell vs csh, 12 scripts), `tests/langtest.sh`
+   (`tests/lang/*.csh` vs `.want` on the real ROM: basic, pipes, ls), `tests/bench.sh` (speed
+   against the ROM Shell). All run against `CTerm/tests/files/uae.sh`'s FS-UAE (`tests/probe/w`);
+   with `W=probe/a` on the A1200 (shared: check `wasabi ps` first, clean RAM: after).
 5. **Speed (the user's rule: never slower than the ROM Shell)**, A1200, best of 3, csh/ROM:
-   Amiga scripts 0.81-0.97; the same jobs in the csh language 0.14-0.96 (a loop with `[ ]` and
-   `$(( ))` 0.14). Keep `tests/bench.sh` green after every change.
-6. **Next: step 5, pipes and jobs** (csh's own pipes with PIPE:, Ctrl-C to every stage, `&`,
-   `jobs`, `fg`); until then a pipe or `&` is handed to the ROM Shell as an Amiga line. Also
-   open: `ls` and the family colour file (step 6), csh as CTerm's tab command (step 7), loading
-   parts on demand (csh is 71 KB now; the language could be a part).
+   Amiga scripts 0.80-0.98; the same jobs in the csh language 0.14-0.99 (pipes 0.98 / 0.99, a
+   loop with `[ ]` and `$(( ))` 0.14). `ls SYS:C` in a window 0.70 s against C:Dir 1.80 s
+   (FS-UAE). Keep `tests/bench.sh` green after every change.
+6. **Next: step 7, csh as CTerm's tab command** (a CTerm setting), and the open items: Ahiru and
+   Maki reading `ENVARC:FileColours`; loading parts on demand (csh is 80 KB now; the language
+   could be a part); csh installed in C: on the A1200 (ask the user first).
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
 ## Decided while building (2026-10-13)
@@ -54,6 +65,13 @@ read or memory is not yet proven on the 3.2 ROM.*
 - **`>&2` writes to `*`** (the console), the Amiga's error stream for a program without one.
 - **Colours in CTerm are 90-97** (its Shell tab takes 30-37 as the Amiga's pens).
 - **The prompt**: with the ROM's default prompt (`%N.%S> `) a failed rc shows before the `>`.
+- **A pipe's last Amiga command runs in csh** (as the ROM Shell's does: a process fewer), Ctrl-C
+  given to every stage by a relay task (ACTION_CHANGE_SIGNAL); a job writes to csh's console.
+- **The family colour file is `ENVARC:FileColours`**: `KIND CTERM,PLAIN` with SGR numbers (the
+  form of csh.prefs; CTerm's theme colours are 90-97), `.EXT KIND`. Kinds: drawer link program
+  script archive picture sound source text icon hidden. A program is a name with no ending and
+  the e bit (Ahiru's rule): reading each file's hunk header was exact but made `ls` of C:
+  slower than C:Dir.
 
 ## The idea
 
@@ -324,5 +342,5 @@ Still open: EndCLI in csh (step 1); which pipe stage gets Ctrl-C.
 Need a decision later:
 10. Where csh gets Amiga commands' templates for completion (a shipped table for 3.2's `C:`, read
     once by running `cmd ?` with empty input, or both).
-11. The family colour file's name and form.
+11. ~~The family colour file's name and form~~: decided, `ENVARC:FileColours` (above).
 12. Whether csh ever becomes the user shell (needs pure code: libnix's `-resident` start-up?).
