@@ -1,0 +1,8 @@
+FailAt 30
+nosuchcommand
+Echo "rc $RC r2 $Result2"
+RAM:rcx 20
+Echo "after rcx20 rc $RC"
+FailAt 10
+Skip nolabel
+Echo "not reached"

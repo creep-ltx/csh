@@ -1,0 +1,2 @@
+.KEY a/A
+Echo "got <a>"

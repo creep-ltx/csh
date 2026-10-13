@@ -8,9 +8,9 @@ read or memory is not yet proven on the 3.2 ROM.*
 ## Start here (a later session)
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`.
-2. The next step is **step 0** in the plan below: answer the open questions on the real 3.2 ROM
-   Shell in FS-UAE (`CTerm/tests/files/uae.sh`, its own wasabi port), and write what was seen into
-   the knowledge note.
+2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
+   `tests/probe` (run against `CTerm/tests/files/uae.sh`'s FS-UAE, wasabi port 1240, via
+   `tests/probe/w`). The next step is **step 1**: csh runs commands.
 3. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`, a PC test harness with fake
    Amiga headers (`Maki/tests/fake`).
 
@@ -137,7 +137,8 @@ csh's Amiga mode is a faithful copy of the ROM Shell's main loop: it reads the s
 `cli_CurrentInput` line by line, so `Execute`, `If`, `Skip` and `Lab` (which move
 `cli_CurrentInput` along) behave exactly as in the ROM Shell.
 
-- **Proposed: use the ROM's own internal commands for them** (the Guru Book says third-party
+- **Decided by step 0: use the ROM's own internal commands for them** (verified: RunCommand on
+  their segments works from csh's process and If/Skip/Execute move `cli_CurrentInput`) (the Guru Book says third-party
   shells may run the 2.0 Shell's internal commands, because the CLI structure is standard): then
   `If`, `Skip`, `Lab`, `Execute` (with `.KEY` and its T: copy), `FailAt`, `Quit`, `Why`, `Set`,
   `Get` are the ROM's, and match it by definition. Step 0 tests whether `RunCommand` on an
@@ -255,23 +256,31 @@ Each step is a beta (`0.1b1`...) tried in FS-UAE, then on the A1200.
 
 ## Open questions
 
-Need the real 3.2 ROM Shell (step 0):
+Answered by step 0 (2026-10-13, verified in FS-UAE on 3.2; details in the knowledge note,
+section D). What it means for csh:
 
-1. Does `RunCommand` on an internal command's segment (CD, If, Skip, Set...) work from a program
-   that is not the ROM Shell, and do `If` / `Skip` then read ahead through `cli_CurrentInput`?
-2. The exact list of internal commands on 3.2 (walk the resident list for `seg_UC == -2`): are
-   Run, Execute, NewShell, Which internal?
-3. In `.KEY`, what `/S`, `/N`, `/M`, `/F` do and what a set `/S` puts in.
-4. Can redirection go anywhere in the line on 3.2? Is there an error-stream redirection?
-5. Native `|` on 3.2: the syntax, the handler, return codes and Ctrl-C across a pipe.
-6. Expansion order on a line (alias, `$var`, backquotes, `*` escapes, redirection); is `$var`
-   expanded inside quotes?
-7. The exact texts of "failed returncode", "Unknown command", Skip's "not found", and which stream.
-8. Implied CD and s-bit / ARexx detection rules; does an `e`-only file without `s` run?
-9. Prompt escapes beyond `%N %S %R` on 3.2.
+1. **The ROM's internals run from csh** with `RunCommand`; If/Skip read ahead through
+   `cli_CurrentInput`; Execute makes the T: copy and points `cli_CurrentInput` at it (inside a
+   script it swallows and closes the old input). csh never caches `cli_CurrentInput` and deletes
+   `cli_CommandFile` at its end.
+2. **Internal on 3.2**: also Run, Execute, NewShell, History, PushCD/PopCD/SwapCD, `.key`/`.bra`/
+   `.ket`, `(`. Which is not. csh's own `History`, `Alias` and `CD` (the prompt's) replace those;
+   the rest are the ROM's.
+3. `.KEY`: `/S` = the keyword itself, `/N` checked, `/M` space-joined, `/F` the rest, `/K` both forms.
+   Free with the ROM's Execute.
+4. Redirection anywhere; **`*>` / `*>>` = the error stream** (csh: `2>` as its own spelling of `*>`
+   in the csh language, `*>` everywhere).
+5. Native `|` needs spaces, rc = the last stage's, Ctrl-C does not reach earlier stages (csh can do
+   better: send it to every stage).
+6. Expansion: `$var` inside quotes too, variables before redirection and `;`, alias `$var` at
+   definition; the `=` trap holds. Amiga scripts copy this exactly.
+7. Messages: all on the normal output; Skip's is "object not found".
+8. Implied CD yes; s bit = script, `/*` = ARexx; e-only text does not run.
+9. Prompt: only `%N %S %s %R %%`; csh adds its own escapes.
+
+Still open: EndCLI in csh (step 1); which pipe stage gets Ctrl-C.
 
 Need a decision later:
-
 10. Where csh gets Amiga commands' templates for completion (a shipped table for 3.2's `C:`, read
     once by running `cmd ?` with empty input, or both).
 11. The family colour file's name and form.

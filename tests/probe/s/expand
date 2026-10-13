@@ -1,0 +1,21 @@
+Set v world
+Echo "1 quoted [$v]"
+Echo 2 star [*$v]
+Echo "3 qstar [*$v]"
+Echo 4 unknown [$nosuch]
+Echo "5 brace [${v}]"
+Set a_b under
+Echo 6 underscore [$a_b] [${a_b}]
+Alias ev Echo 7 alias [$v]
+Set v changed
+ev
+Echo "8 bq [`Echo inner`]"
+Echo 9 bq [`Echo inner`]
+Set r ">RAM:x10"
+Echo 10 var-redirect $r
+Set c "; comment"
+Echo 11 var-semicolon $c
+Set m "a=b"
+Echo 12 eq a=b "q=r" $m
+Echo 13 alias-bq [`ev`]
+Echo 14 "*e[1mbold*e[0m" "*N" end

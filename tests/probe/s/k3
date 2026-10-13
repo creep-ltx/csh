@@ -1,0 +1,2 @@
+.KEY opt/K,def
+Echo "opt=[<opt>] def=[<def$dflt>]"

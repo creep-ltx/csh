@@ -1,0 +1,5 @@
+Echo inside
+Else
+Echo inelse
+EndIf
+Echo after

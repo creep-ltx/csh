@@ -1,0 +1,10 @@
+Echo hello | RAM:pcat
+Echo "rc after pipe: $RC"
+RAM:rcx 10 | RAM:pcat
+Echo "rc after rcx10|pcat: $RC"
+Echo hi | RAM:rcx 5
+Echo "rc after echo|rcx5: $RC"
+Echo hi|RAM:pcat
+Echo "nospace rc $RC"
+Echo "a | b"
+Echo a *| b

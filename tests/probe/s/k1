@@ -1,0 +1,2 @@
+.KEY name/A,flag/S,num/N,many/M
+Echo "name=[<name>] flag=[<flag>] num=[<num>] many=[<many>]"

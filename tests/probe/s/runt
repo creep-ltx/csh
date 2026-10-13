@@ -1,0 +1,5 @@
+Run RAM:rcx 0
+Run >NIL: RAM:rcx 0
+Run RAM:perr
+Wait 1
+Echo "rc $RC"

@@ -1,0 +1,16 @@
+RAM:perr
+Echo "-- *>"
+RAM:perr *>RAM:e1
+Echo "-- 2>"
+RAM:perr 2>RAM:e2
+Echo "-- >file *>file2"
+RAM:perr >RAM:e3o *>RAM:e3e
+Echo "-- e1:"
+Type RAM:e1
+Echo "-- e3o:"
+Type RAM:e3o
+Echo "-- e3e:"
+Type RAM:e3e
+Echo "-- *>>"
+RAM:perr *>>RAM:e1
+Type RAM:e1

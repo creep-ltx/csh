@@ -1,0 +1,2 @@
+.KEY first,rest/F
+Echo "first=[<first>] rest=[<rest>]"
