@@ -9,6 +9,6 @@ int main(void)
     BPTR err = p->pr_CES ? p->pr_CES : Output();
     FPuts(Output(), "to-out\n"); Flush(Output());
     FPuts(err, "to-err\n"); Flush(err);
-    Printf("COS %lx CES %lx CIS %lx\n", (ULONG)p->pr_COS, (ULONG)p->pr_CES, (ULONG)p->pr_CIS);
+    Printf("CES %s, COS %s\n", p->pr_CES ? "set" : "0", p->pr_COS == Output() ? "= Output()" : "other");
     return 0;
 }

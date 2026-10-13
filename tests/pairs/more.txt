@@ -1,0 +1,15 @@
+FailAt 30
+Protect RAM:noe -e
+RAM:noe
+Echo "noe rc $RC"
+Echo one +
+two
+Execute RAM:inner.key
+Echo "missing arg rc $RC"
+Execute RAM:inner.key "with space"
+Set echo on
+Echo echoed
+Set echo off
+Stack
+Prompt "x> "
+Echo "done"

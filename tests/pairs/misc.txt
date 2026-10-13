@@ -1,0 +1,7 @@
+RAM:
+CD
+SYS:
+RAM:sbit
+RAM:ebit
+RAM:rexx
+Echo "after rexx rc $RC"

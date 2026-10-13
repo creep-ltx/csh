@@ -1,0 +1,8 @@
+Echo >RAM:r1 before
+Echo end >RAM:r2
+Echo mid >RAM:r3 dle
+RAM:rcx 0 *>RAM:r4
+Echo star *>RAM:r5
+Type RAM:r1 RAM:r2 RAM:r3
+Echo "-- r4/r5:"
+Type RAM:r4 RAM:r5

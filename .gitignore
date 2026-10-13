@@ -4,3 +4,5 @@ tests/probe/pcat
 tests/probe/rcx
 tests/probe/perr
 tests/probe/execlf
+build/
+/csh

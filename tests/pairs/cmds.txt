@@ -1,0 +1,27 @@
+CD RAM:
+CD
+Echo >RAM:p1 "pipe me"
+Type RAM:p1
+C:List RAM:p1 QUICK NOHEAD
+List RAM:p1 QUICK NOHEAD
+RAM:rcx 5
+Echo "rc $RC result2 $Result2"
+Why
+Set x 12
+Get x
+Unset x
+Echo "[$x]"
+Alias hi Echo hello []!
+hi there
+Unalias hi
+Path RAM: ADD
+rcx 3
+Echo "via path rc $RC"
+Path RAM: REMOVE
+"RAM:rcx" 2
+Echo "quoted rc $RC"
+Echo "`Echo bq` and *`literal*`"
+Echo a ; Echo b
+Version csh-nothing
+Quit 7
+Echo "not after quit"

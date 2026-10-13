@@ -1,0 +1,25 @@
+Set n 1
+Lab top
+Echo "loop $n"
+Set n `Eval $n + 1`
+If NOT $n GE 4 VAL
+  Skip top BACK
+EndIf
+If EXISTS RAM:
+  Echo "ram exists"
+Else
+  Echo "no ram"
+EndIf
+If NOT EXISTS RAM:nothing
+  Echo "not there"
+EndIf
+Skip forward
+Echo "skipped"
+Lab forward
+Echo "after forward"
+FailAt 21
+RAM:rcx 20
+Echo "rc $RC"
+If WARN
+  Echo "warn set"
+EndIf

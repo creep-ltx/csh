@@ -1,6 +1,6 @@
 # CShell (csh): a modern shell for the Amiga
 
-*Design written 2026-10-12 with the user; nothing built yet. Everything here is proposed unless it
+*Design written 2026-10-12 with the user; csh 0.1b1 (step 1) built 2026-10-13. Everything here is proposed unless it
 says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
 AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
 read or memory is not yet proven on the 3.2 ROM.*
@@ -9,10 +9,23 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`.
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
-   `tests/probe` (run against `CTerm/tests/files/uae.sh`'s FS-UAE, wasabi port 1240, via
-   `tests/probe/w`). The next step is **step 1**: csh runs commands.
-3. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`, a PC test harness with fake
-   Amiga headers (`Maki/tests/fake`).
+   `tests/probe`.
+3. **Step 1 is done: csh 0.1b1** (2026-10-13, `src/`): reads lines from `cli_CurrentInput`, the
+   ROM's line rules (`src/line.c`: alias, `$var`, backquotes, redirection anywhere, `*>`, `;`,
+   `+` lines), the ROM's search order, RunCommand on csh's own process (`src/run.c`), the ROM's
+   internal commands for everything they do (CD, Set, If, Skip, Execute, Prompt...), FailAt,
+   `Set echo on`, Ctrl-D in scripts, `exit [rc]`, EndCLI, `csh FROM file`. Pipes are still handed
+   to the ROM Shell through SystemTags. The line is edited by the console (CON: or CTerm).
+4. **Testing:** `make test` (the line rules on the PC, ASan); `tests/pairs.sh [NAME]` runs every
+   `tests/pairs/NAME.txt` through the ROM Shell (Execute) and csh (`csh FROM`) in the FS-UAE of
+   `CTerm/tests/files/uae.sh` (start it first; wasabi port 1240 via `tests/probe/w`) and compares
+   output and rc: all 11 the same on 2026-10-13. Tried by hand in a NewShell window and a CTerm
+   tab (prompt escapes, Ctrl-C, implied CD, exit, EndCLI). Not yet on the A1200.
+5. **Next: step 3, the prompt** (history, Ctrl+R, completion, suggestions, colours, `csh.keys`),
+   since step 2 (Amiga scripts) mostly came free with the ROM's internal commands. Left from
+   steps 1-2: `csh <file` (reads the handle the ROM Shell owns; an Execute in it would close it:
+   use `csh FROM file`), backquotes in the prompt, the H-bit auto-resident.
+6. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
 ## The idea
 
