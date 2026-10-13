@@ -1,6 +1,6 @@
 # CShell (csh): a modern shell for the Amiga
 
-*Design written 2026-10-12 with the user; csh 0.1b1 (step 1) built 2026-10-13. Everything here is proposed unless it
+*Design written 2026-10-12 with the user; steps 1-4 built 2026-10-13 (csh 0.1b1). Everything here is proposed unless it
 says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
 AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
 read or memory is not yet proven on the 3.2 ROM.*
@@ -10,22 +10,50 @@ read or memory is not yet proven on the 3.2 ROM.*
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`.
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
-3. **Step 1 is done: csh 0.1b1** (2026-10-13, `src/`): reads lines from `cli_CurrentInput`, the
-   ROM's line rules (`src/line.c`: alias, `$var`, backquotes, redirection anywhere, `*>`, `;`,
-   `+` lines), the ROM's search order, RunCommand on csh's own process (`src/run.c`), the ROM's
-   internal commands for everything they do (CD, Set, If, Skip, Execute, Prompt...), FailAt,
-   `Set echo on`, Ctrl-D in scripts, `exit [rc]`, EndCLI, `csh FROM file`. Pipes are still handed
-   to the ROM Shell through SystemTags. The line is edited by the console (CON: or CTerm).
-4. **Testing:** `make test` (the line rules on the PC, ASan); `tests/pairs.sh [NAME]` runs every
-   `tests/pairs/NAME.txt` through the ROM Shell (Execute) and csh (`csh FROM`) in the FS-UAE of
-   `CTerm/tests/files/uae.sh` (start it first; wasabi port 1240 via `tests/probe/w`) and compares
-   output and rc: all 11 the same on 2026-10-13. Tried by hand in a NewShell window and a CTerm
-   tab (prompt escapes, Ctrl-C, implied CD, exit, EndCLI). Not yet on the A1200.
-5. **Next: step 3, the prompt** (history, Ctrl+R, completion, suggestions, colours, `csh.keys`),
-   since step 2 (Amiga scripts) mostly came free with the ROM's internal commands. Left from
-   steps 1-2: `csh <file` (reads the handle the ROM Shell owns; an Execute in it would close it:
-   use `csh FROM file`), backquotes in the prompt, the H-bit auto-resident.
-6. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
+3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):
+   - **Step 1, csh runs commands** (`src/run.c`, `src/line.c`): the ROM's line rules, search order
+     and RunCommand on csh's own process; the ROM's internal commands for CD, Set, If, Skip,
+     Execute, Prompt...; FailAt, `Set echo on`, Ctrl-D, EndCLI. Amiga scripts (Execute, s-bit,
+     `csh FROM file` without `#!csh`) run by these rules, and come out byte for byte as in the
+     ROM Shell (step 2 mostly came free with the ROM's own internal commands).
+   - **Step 3, the prompt** (`term.c`, `edit.c`, `comp.c`, `hist.c`, `keys.c`, `prefs.c`): csh edits
+     its line itself in raw mode; colours as typed, the grey suggestion, Up/Down by prefix, Ctrl+R,
+     Tab (commands, files, assigns, `$vars`), `ENVARC:CShell/csh.keys` and `csh.prefs`, history in
+     `ENV:CShell/history` (shared between tabs, saved to ENVARC every 20 lines and at the end).
+   - **Step 4, the csh language** (`lang.c`, `builtin.c`, `os.c`): at the prompt and in `#!csh`
+     scripts. The words go back to Amiga commands as an Amiga line (`amigaarg()`).
+4. **Testing:** `make test` (PC, ASan: 57 line-rule and 96 language checks, `tests/fakeos.c`
+   stands in for the Amiga); `tests/pairs.sh` (ROM Shell vs csh, 11 scripts), `tests/langtest.sh`
+   (`tests/lang/*.csh` vs `.want` on the real ROM), `tests/bench.sh` (speed against the ROM
+   Shell). All run against `CTerm/tests/files/uae.sh`'s FS-UAE (`tests/probe/w`); with
+   `W=probe/a` on the A1200 (shared: check `wasabi ps` first, clean RAM: after).
+5. **Speed (the user's rule: never slower than the ROM Shell)**, A1200, best of 3, csh/ROM:
+   Amiga scripts 0.81-0.97; the same jobs in the csh language 0.14-0.96 (a loop with `[ ]` and
+   `$(( ))` 0.14). Keep `tests/bench.sh` green after every change.
+6. **Next: step 5, pipes and jobs** (csh's own pipes with PIPE:, Ctrl-C to every stage, `&`,
+   `jobs`, `fg`); until then a pipe or `&` is handed to the ROM Shell as an Amiga line. Also
+   open: `ls` and the family colour file (step 6), csh as CTerm's tab command (step 7), loading
+   parts on demand (csh is 71 KB now; the language could be a part).
+7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
+
+## Decided while building (2026-10-13)
+
+- **false is 1** (`test`, `!`, `false`): bash's value; `&&`, `||`, `if` take 0 as true and any
+  other rc as false, so an Amiga command's 5 (Search not finding) is false too.
+- **Built-ins and Amiga commands of the same name**: commands are any case, so the Amiga one
+  keeps its place where they clash: csh's `eval` and `time` only in lower case (C:Eval does
+  sums), `break` only inside a loop (C:Break), `echo` with NOLINE/FIRST/LEN/TO, `alias` without
+  `=`, `set` with nothing after it go to the ROM's own. No `type` built-in (C:Type prints files;
+  Which says where a command is). `Set name value` and `set name value` both set.
+- **A word back to the Amiga**: a word that had quotes is quoted the Amiga way (`*` -> `**`, `"`
+  -> `*"`, LF -> `*N`); an unquoted `*` becomes `#?` and the program matches the pattern;
+  `KEY=value` unquoted stays as it is (ReadArgs' keys). `for f in *.txt` matches itself.
+- **`#` is a comment at a word's start, except an Amiga pattern** (`#?`, `#(`, `#[`, `##`, `#~`).
+- **`$( )` and `( )` are not subshells** (no fork on the Amiga): they run in csh itself, so a
+  variable set inside stays set.
+- **`>&2` writes to `*`** (the console), the Amiga's error stream for a program without one.
+- **Colours in CTerm are 90-97** (its Shell tab takes 30-37 as the Amiga's pens).
+- **The prompt**: with the ROM's default prompt (`%N.%S> `) a failed rc shows before the `>`.
 
 ## The idea
 
