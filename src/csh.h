@@ -7,8 +7,8 @@
 #include <dos/dosextens.h>
 #include "line.h"
 
-#define CSH_VERSION "0.1b4"
-#define CSH_DATE    "13.10.2026"
+#define CSH_VERSION "0.1b5"
+#define CSH_DATE    "14.10.2026"
 
 #ifndef CMD_INTERNAL
 #define CMD_SYSTEM   -1
@@ -26,6 +26,8 @@ struct csh {
     LONG rc;               /* the last return code, csh's own at the end */
     LONG bg0;              /* cli_Background when csh started (EndCLI sets it) */
     int broke;             /* a Ctrl-C stopped csh's language since the last prompt */
+    int usershell;         /* cshell: csh is this Shell itself (Resident shell ... REPLACE) */
+    int system;            /* ... started by System(): ends when its commands do */
     char outercf[256];     /* the script csh was started from (its T: file is not csh's to delete) */
 };
 
@@ -45,6 +47,8 @@ struct prepared {
     char romline[512];          /* a script: the line for the ROM Shell */
 };
 int run_prepare(struct cmdline *c, struct prepared *p);
+int run_exists(const char *name);
+void run_end(void);             /* csh ends: run.c's FileInfoBlock given back */
 void run_release(struct prepared *p, int detached);
 LONG run_prepared(struct cmdline *c, struct prepared *p);
 

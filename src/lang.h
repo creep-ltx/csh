@@ -57,6 +57,7 @@ long os_job_in(void *job);               /* the first stage reads here */
 long os_job_out(void *job);              /* the last stage writes here */
 int os_pipe(void *job, long *readh, long *writeh);
 int os_spawn(void *job, struct cmdline *c, long in, long out);   /* 0 = it could not start (said) */
+int os_exists(const char *cmd);          /* a command of that name to run (not loaded) */
 long os_lastrun(void *job, struct cmdline *c, long in);   /* the last Amiga command, run in csh */
 void *os_select(long in, long out);      /* csh's own stage: these streams for a while */
 void os_unselect(void *s);

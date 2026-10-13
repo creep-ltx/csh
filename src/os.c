@@ -378,6 +378,8 @@ int os_cd(const char *dir)
 
 long os_number(void) { return csh.me->pr_TaskNum; }
 
+int os_exists(const char *cmd) { return run_exists(cmd); }
+
 /* The CLI number and where this csh's data lies: a csh started from csh
  * (same CLI) or one in another tab never picks the same T: or PIPE: name. */
 int csh_tag(char *b)

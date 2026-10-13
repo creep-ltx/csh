@@ -1899,6 +1899,20 @@ static long __attribute__((noinline)) pipeline(Node *n, int bg)
     int ns, i, lastint = 0;
     memset(&text, 0, sizeof text); text.ar = &ar;
     if ((ns = flatten(n, st, 32)) < 0) { sh_error("a pipe of more than 32 commands", ""); afree(&ar); setrc(10); return 10; }
+    /* every Amiga command after the first looked for before any starts: one
+     * missing, none starts (the ROM Shell's rule). A stage writing into it
+     * would wait for ever on a pipe nobody reads (3.2's PIPE: has no SIGPIPE).
+     * A missing first one is bash's case: the others run, reading nothing. */
+    for (i = 1; i < ns; i++) {
+        char *w;
+        int q;
+        if (internal(&ar, st[i]) || !st[i]->nwords) continue;
+        w = expand1(&ar, st[i]->words[0], &q);
+        if (*w && !os_exists(w)) {
+            os_err(w, strlen(w)); os_err(": Unknown command\n", 18);
+            afree(&ar); setrc(10); return 10;
+        }
+    }
     nodetext(n, &text);
     if (!(job = os_job_new(text.s ? text.s : "", bg))) { afree(&ar); return 20; }
     in = os_job_in(job);

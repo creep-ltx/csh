@@ -7,3 +7,7 @@ tests/probe/execlf
 build/
 /csh
 /ls
+build-shell/
+/cshell
+tests/probe/sigs
+tests/probe/bootshell

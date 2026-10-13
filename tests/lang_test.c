@@ -224,6 +224,7 @@ int main(void)
     run("case aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab in *a*a*a*a*a*a*a*a*a*a*a*a*a*a*c) echo no;; *a*b) echo yes;; esac", "yes\n");
     run("for f in *.txt; do echo $f; done", "a.txt\nb.txt\n");
     run("return x", "csh: return: not a number: x\n");
+    run("List | Sort | NoSuchCmd; echo rc $?", "NoSuchCmd: Unknown command\nrc 10\n");
     printf("%d of %d language checks passed\n", ran - bad, ran);
     return bad != 0;
 }

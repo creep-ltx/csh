@@ -254,6 +254,7 @@ static int fakeh = 10;
 void *os_job_new(const char *text, int bg) { char b[300]; snprintf(b, sizeof b, "{job%s %s}", bg ? " &" : "", text); os_write(b, strlen(b)); return (void *)1; }
 long os_job_in(void *j) { (void)j; return 1; }
 long os_job_out(void *j) { (void)j; return 2; }
+int os_exists(const char *cmd) { return strncmp(cmd, "NoSuch", 6) != 0; }
 int os_pipe(void *j, long *r, long *w) { (void)j; *r = fakeh++; *w = fakeh++; return 1; }
 int os_spawn(void *j, struct cmdline *c, long in, long out)
 {

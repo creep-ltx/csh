@@ -47,6 +47,7 @@
 #endif
 
 struct stage {
+    void *a4;                   /* cshell: csh's data for this stage's process (first: shellstart.S) */
     struct stage *next;
     struct prepared p;
     struct Process *proc;
@@ -76,6 +77,20 @@ struct job {
     char tempname[48];
 };
 
+#ifdef CSH_USERSHELL
+/* cshell is pure (one code, a copy of the data each Shell): code running
+ * in csh's other tasks gets a4, the data's address, through these
+ * (shellstart.S) */
+void stage_stub(void);
+void relay_stub(void);
+static void *mya4(void) { register void *r __asm__("a4"); return r; }
+#define STAGE_ENTRY stage_stub
+#define RELAY_ENTRY relay_stub
+#else
+#define STAGE_ENTRY stage_entry
+#define RELAY_ENTRY relay_entry
+#endif
+
 static ULONG donesig;
 static int donebit = -1;
 static struct job *jobs;
@@ -101,7 +116,7 @@ static ULONG hexfrom(const char *s)
 }
 
 /* The child: runs its one command, closes its streams, says it is done. */
-static void stage_entry(void)
+void stage_entry(void)
 {
     struct stage *st = (struct stage *)hexfrom(GetArgStr());
     struct Process *me = (struct Process *)FindTask(NULL);
@@ -227,6 +242,9 @@ int job_spawn_prepared(void *job, struct cmdline *c, long inh, long outh, struct
     if (!st) { run_release(pp, 0); os_close(j, in); os_close(j, out); return 0; }
     st->p = *pp;
     st->parent = (struct Task *)csh.me;
+#ifdef CSH_USERSHELL
+    st->a4 = mya4();
+#endif
     *j->tail = st; j->tail = &st->next;     /* linked even when it fails: its rc counts */
     j->nstages++;
     if (!in) in = Open("NIL:", MODE_OLDFILE);
@@ -261,7 +279,7 @@ int job_spawn_prepared(void *job, struct cmdline *c, long inh, long outh, struct
     st->closein = owned(j, in);
     st->closeout = owned(j, out) && out != in;
     hexto(st->argstr, (ULONG)st);
-    st->proc = CreateNewProcTags(NP_Entry, (ULONG)stage_entry,
+    st->proc = CreateNewProcTags(NP_Entry, (ULONG)STAGE_ENTRY,
                                  NP_Input, in, NP_Output, out,
                                  NP_CloseInput, st->closein, NP_CloseOutput, st->closeout,
                                  NP_Cli, TRUE, NP_Name, (ULONG)(j->bg ? "csh job" : "csh pipe"),
@@ -402,6 +420,15 @@ long os_job_end(void *job, long lastrc, int lastinternal)
     if (!j->bg) {
         LONG r2, lastr2 = csh.cli->cli_Result2;     /* the last stage's, when it ran in csh */
         DBG(("wait job\n"));
+        if (lastinternal) {
+            /* the last stage is done: nobody reads what the others write any
+             * more. One still running after a second gets a Ctrl-C - Unix's
+             * SIGPIPE; else a writer waits for ever on its full pipe (List |
+             * Sort | NoSuchCommand: Sort gives up, List waits) */
+            int k;
+            for (k = 0; k < 50 && !alldone(j); k++) Delay(1);
+            if (!alldone(j)) breakall(j);
+        }
         if (waitjob(j)) {
             /* Ctrl-C twice: a stage ignores breaks; it goes on as a job */
             os_flush();
@@ -462,7 +489,7 @@ static volatile int relayquit, relaygone;
 static void *relaymem;
 static UBYTE relaybit;          /* the signal CreateMsgPort took: DeleteMsgPort frees it */
 
-static void relay_entry(void)
+void relay_entry(void)
 {
     for (;;) {
         ULONG s = Wait(SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
@@ -497,12 +524,15 @@ static int relaystart(void)
     t->tc_SPUpper = stk + 2048;
     t->tc_SPReg = stk + 2048;
     relayfor = (struct Task *)csh.me;
+#ifdef CSH_USERSHELL
+    t->tc_UserData = mya4();
+#endif
     relayquit = relaygone = 0;
     /* the console signals the port's task: the relay */
     relaybit = relayport->mp_SigBit;
     relayport->mp_SigTask = t;
     relayport->mp_SigBit = SIGBREAKB_CTRL_C;
-    if (!AddTask(t, (APTR)relay_entry, NULL)) {
+    if (!AddTask(t, (APTR)RELAY_ENTRY, NULL)) {
         relayport->mp_SigTask = (struct Task *)csh.me;
         relayport->mp_SigBit = relaybit;
         DeleteMsgPort(relayport); relayport = NULL; FreeVec(relaymem); relaymem = NULL;

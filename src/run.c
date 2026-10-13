@@ -334,13 +334,38 @@ static int builtin(struct cmdline *c)
     return 0;
 }
 
+/* One FileInfoBlock for the searches, kept while csh runs and given back
+ * at its end (run_end): a kept one leaked 260 bytes each csh. */
+static struct FileInfoBlock *fib;
+
+void run_end(void)
+{
+    if (fib) FreeDosObject(DOS_FIB, fib);
+    fib = NULL;
+}
+
+/* Is there a command of that name (resident, a file in the current dir,
+ * the Path or C:)? Nothing loaded. For a pipe: every stage is looked for
+ * before any starts, as the ROM Shell does. */
+int run_exists(const char *name)
+{
+    struct Segment *seg = NULL;
+    BPTR lock = 0, where;
+    const char *lname;
+    int f;
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 1;
+    f = find(name, 0, &seg, &lock, fib, &where, &lname);
+    if (f == F_RES) { if (seg->seg_UC > 0) resident_done(seg); return 1; }
+    if (lock) UnLock(lock);
+    return f == F_FILE;
+}
+
 /* For a pipe stage or a job: the command found and loaded, not run (a
  * process of its own runs it, job.c). Fills *p; returns 0 when it cannot
  * be run (said, rc set). A script or ARexx file is given as a ROM Shell
  * line instead (p->romline), as the ROM Shell runs those. */
 int run_prepare(struct cmdline *c, struct prepared *p)
 {
-    static struct FileInfoBlock *fib;
     struct Segment *seg = NULL;
     BPTR lock = 0, where;
     const char *lname;
@@ -418,14 +443,13 @@ void run_release(struct prepared *p, int detached)
  * the search, then RunCommand. Returns the rc (also in $RC). */
 LONG run_cmd(struct cmdline *c, int depth)
 {
-    static struct FileInfoBlock *fib;
     struct Segment *seg = NULL;
     BPTR lock = 0, where;
     const char *lname;
     int f, alone, det;
     LONG rc = 0;
 
-    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 20;   /* kept for csh's life */
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 20;
     alone = c->args[0] == '\n' && !c->in[0] && !c->out[0];
     f = find(c->cmd, alone, &seg, &lock, fib, &where, &lname);
     if (f == F_RES) {

@@ -41,7 +41,11 @@ replacement.**
    2026-10-13 (the user asked; C:csh-0.1b3.bak and C:ls-0.1.bak kept), tried in CTerm there (prompt,
    pipes, colours). Not yet tried: a marked paste in CTerm.** Four nameless tasks (2048 stack,
    pri 2) on the A1200 look like break relays left by an older csh, waiting in freed memory: ask the
-   user before removing them.
+   user before removing them. **0.1b5 (2026-10-14)**: cshell, the user shell (see "csh as the user
+   shell"); csh itself: run.c's FileInfoBlock freed at the end (260 bytes a run, measured), a pipe
+   whose command after the first is missing starts nothing (a writer would wait for ever on 3.2's
+   PIPE:), and once a pipe's last stage is done the others get a Ctrl-C after a second. 0.1b5 is not
+   on the A1200.
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
 3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):
@@ -121,6 +125,38 @@ replacement.**
   script archive picture sound source text icon hidden. A program is a name with no ending and
   the e bit (Ahiru's rule): reading each file's hunk header was exact but made `ls` of C:
   slower than C:Dir.
+
+## csh as the user shell: cshell (2026-10-14, step 1 of "csh in a ROM")
+
+The user asked (2026-10-13): could csh replace the built-in shell in a custom ROM, in the emulator, for
+fun? Three steps agreed: (1) csh as a real user shell, (2) tried with `Resident shell C:cshell REPLACE`,
+(3) a ROM image with the shell module swapped (Remus/Capitoline, or LoadModule). **Steps 1 and 2 are
+done in FS-UAE; step 3 is next.** Never on the A1200 unless the user asks.
+
+- **`cshell`** is built from the same source (`make cshell`, `-DCSH_USERSHELL`): one binary, one code
+  for every Shell window. **Pure** through `-resident32`: each start gets its own copy of the data
+  (47 KB), a4 pointing at it. Its own start-up, `src/shellstart.S` (libnix's nlrcrt0.S changed): the
+  start-up packet taken first (before any library code could get it as an answer to a packet of its
+  own), no Workbench path, no command line, `_keepdata` (jobs left running at the end keep the data).
+- **Other tasks of csh's** (a pipe stage's process, the break relay) have no a4: `_stage_stub` takes it
+  from the struct stage (first long; the process's argument is its hex address), `_relay_stub` from
+  the relay task's tc_UserData.
+- **main.c**: `shell_init` (the Guru Book's ShellInit.c: Res2 != 0 refused, segArray[3] to [4],
+  CliInitNewcli / CliInitRun, the packet answered at once for NewShell, Run and an asynchronous
+  System(), at the end for a synchronous one with the rc), `shell_end` (the streams closed by the
+  flags, the current dir unlocked). **CliInitRun changes registers it should keep** (a4: csh lost its
+  data and wrote nowhere, then crashed in the next command): called through `_cliinit` in shellstart.S,
+  every register saved.
+- **3.2 facts seen** (FS-UAE, Kickstart 47.96): NewShell and Run both start the shell with Res1 0
+  (CliInitRun), and CliInitRun's answer had no bit 31 (a ROM address, not flags): the "flags not
+  valid" path of the Guru Book is the one taken. **wasabid's `run` (System()) uses the user shell**:
+  with cshell installed every `wasabi run` goes through it - its lines by the Amiga script rules, as
+  the ROM Shell would.
+- In the loop: a background Shell (Run, System()) never shows a prompt; System() ends when its command
+  lines do; commands get cli_StandardInput as their input (not the command stream: Type failed).
+- Tested: `tests/shelltest.sh` (System() lines and rc, 10 System() shells leave no memory, a NewShell
+  window with csh's language, exit closes it; the BootShell put back with `tests/probe/bootshell`).
+  By hand: two cshell windows at once, pipes, `&` jobs, `Run`, EndShell.
 
 ## The idea
 

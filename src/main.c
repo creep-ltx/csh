@@ -21,9 +21,81 @@
 #include "edit.h"
 #include "lang.h"
 
+#ifdef CSHDEBUG
+#include <clib/debug_protos.h>
+#define DBG(x) KPrintF x
+#else
+#define DBG(x)
+#endif
+
+#ifdef CSH_USERSHELL
+static const char version[] = "$VER: cshell " CSH_VERSION " (" CSH_DATE ")";
+#else
 static const char version[] = "$VER: csh " CSH_VERSION " (" CSH_DATE ")";
+#endif
 
 struct csh csh;
+
+#ifdef CSH_USERSHELL
+/* ---- csh as the system's user shell (cshell; docs/design.md "csh as the
+ * user shell"; the Guru Book 14.5 and its ShellInit.c). shellstart.S took
+ * the start-up packet; here the CLI is made from it, and at the end the
+ * streams closed and the packet answered as the type of start asks. */
+extern struct DosPacket *_shellpkt;
+extern long _keepdata;
+
+#define FNF_VALIDFLAGS  0x80000000UL
+#define FNF_ASYNCSYSTEM 0x00000008UL
+#define FNF_SYSTEM      0x00000004UL
+#define FNF_USERINPUT   0x00000002UL
+#define FNF_RUNOUTPUT   0x00000001UL
+
+enum { SH_FAILURE, SH_ASYNC, SH_RUN, SH_SYNC };
+LONG cliinit(struct DosPacket *dp, LONG newcli, struct DosLibrary *dos);   /* shellstart.S */
+static int shtype;
+static ULONG shflags;
+
+/* 0: no shell to run (the packet was answered) */
+static int shell_init(void)
+{
+    struct DosPacket *dp = _shellpkt;
+    struct Process *pr = (struct Process *)FindTask(NULL);
+    BPTR *seg = BADDR(pr->pr_SegList);
+    LONG newcli;
+    if (dp->dp_Res2) { ReplyPkt(dp, dp->dp_Res1, dp->dp_Res2); return 0; }   /* a start not defined yet */
+    newcli = dp->dp_Res1;
+    if (!seg[4]) { seg[4] = seg[3]; seg[3] = 0; }      /* room for the commands' seglists */
+    shflags = cliinit(dp, newcli, DOSBase);
+    DBG(("cshell: newcli %ld flags %lx ioerr %lx pr %lx\n", newcli, shflags, IoErr(), (ULONG)pr));
+    if (!(shflags & FNF_VALIDFLAGS)) {
+        if ((struct Process *)IoErr() == pr) return 0;  /* failed; the packet was answered */
+        shtype = newcli ? SH_ASYNC : SH_RUN;
+    } else shtype = shflags & FNF_ASYNCSYSTEM ? SH_ASYNC : SH_SYNC;
+    /* NewShell, an asynchronous System(), Run: the caller goes on now */
+    if (shtype == SH_ASYNC || shtype == SH_RUN) ReplyPkt(dp, dp->dp_Res1, dp->dp_Res2);
+    SetProgramDir(0);
+    csh.usershell = 1;
+    csh.system = (shflags & (FNF_VALIDFLAGS | FNF_SYSTEM)) == (FNF_VALIDFLAGS | FNF_SYSTEM);
+    DBG(("cshell: type %ld cli %lx\n", (LONG)shtype, (ULONG)Cli()));
+    return 1;
+}
+
+static void shell_end(void)
+{
+    struct CommandLineInterface *cli = Cli();
+    BPTR cd;
+    if (!(shflags & FNF_VALIDFLAGS)) {
+        if (cli->cli_StandardInput) Close(cli->cli_StandardInput);
+        if (cli->cli_StandardOutput) { Flush(cli->cli_StandardOutput); Close(cli->cli_StandardOutput); }
+    } else {
+        Flush(Output());
+        if (!(shflags & FNF_USERINPUT)) Close(cli->cli_StandardInput);
+        if (shflags & FNF_RUNOUTPUT) { Flush(cli->cli_StandardOutput); Close(cli->cli_StandardOutput); }
+    }
+    if (shtype == SH_SYNC) ReplyPkt(_shellpkt, cli->cli_ReturnCode, cli->cli_Result2);
+    if ((cd = CurrentDir(0))) UnLock(cd);
+}
+#endif
 
 /* The prompt from cli_Prompt (set by the ROM's Prompt command): %N the CLI
  * number, %S or %s the current dir, %R the last return code, %% a percent
@@ -174,6 +246,15 @@ static int smain(void)
     }
     oldfail = cli->cli_FailLevel;
     csh.bg0 = cli->cli_Background;
+    if (csh.usershell) {
+        /* the Shell itself: no arguments; a command's streams are the CLI's
+         * standard ones (the Guru Book 14.5.2), not the stream of command
+         * lines (System()'s, a script's) */
+        SelectInput(cli->cli_StandardInput);
+        SelectOutput(cli->cli_StandardOutput);
+        rd = NULL;
+        goto shell;
+    }
     if (!(rd = ReadArgs("FROM,ARGS/M,COMMAND/K", arg, NULL))) { PrintFault(IoErr(), "csh"); return 20; }
     if (arg[2] || (arg[0] && lang_isscript((char *)arg[0]))) {
         /* csh COMMAND "text", or csh FROM a #!csh script [args]: run, end */
@@ -190,6 +271,7 @@ static int smain(void)
         job_leave();
         lang_end();
         os_end();
+        run_end();
         if (!csh.module) cli->cli_Module = 0;
         return r;
     }
@@ -197,13 +279,14 @@ static int smain(void)
         PrintFault(IoErr(), (STRPTR)arg[0]); FreeArgs(rd); return 20;
     }
     FreeArgs(rd);
+shell:
     csh.in = Input();
     csh.out = Output();
-    csh.module = cli->cli_Module;
+    csh.module = cli->cli_Module;     /* 0 for the Shell itself: nothing of csh's to keep loaded */
     oldcur = cli->cli_CurrentInput;
     oldinter = cli->cli_Interactive;
     if (from) { csh.fromfile = 1; cli->cli_CurrentInput = from; }
-    else {
+    else if (!csh.usershell) {        /* the Shell itself reads what CliInit gave it (Shell-Startup first) */
         cli->cli_CurrentInput = cli->cli_StandardInput;
         if (IsInteractive(cli->cli_StandardInput)) SetMode(cli->cli_StandardInput, 0);
     }
@@ -220,8 +303,12 @@ static int smain(void)
             }
             break;
         }
-        int inter = !csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput;
+        /* a background Shell (Run, System()) never has a prompt */
+        int inter = !csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput
+                    && !(csh.usershell && cli->cli_Background);
         if (cli->cli_Background && !csh.bg0) break;       /* EndCLI / EndShell */
+        /* System(): done when its command lines are (it never reads the console) */
+        if (csh.system && cli->cli_CurrentInput == cli->cli_StandardInput) break;
         if (csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput) break;
         cli->cli_Interactive = inter ? DOSTRUE : DOSFALSE;
         if (inter) {
@@ -236,6 +323,7 @@ static int smain(void)
                     os_flush();
                 }
             }
+            DBG(("cshell: interactive, out %lx\n", csh.out));
             if (editing < 0) {
                 editing = term_possible(cli->cli_StandardInput, csh.out);
                 if (editing) editor_start();
@@ -291,15 +379,21 @@ static int smain(void)
             SetSignal(0, SIGBREAKF_CTRL_C);
             continue;
         }
+        DBG(("cshell: script line\n"));
         if (!script_step(line, sizeof line)) break;
     }
+    DBG(("cshell: loop ends\n"));
 
     job_leave();
     if (!csh.module) cli->cli_Module = 0;   /* jobs still run csh's code: it stays in memory */
+#ifdef CSH_USERSHELL
+    if (csh.usershell && job_running()) _keepdata = 1;   /* and its data: they use it */
+#endif
     if (editing > 0) { hist_save(); term_cleanup(); edit_end(); }
     lang_end();
     os_end();
-    if (!(cli->cli_Background && !csh.bg0)) {
+    run_end();
+    if (!csh.usershell && !(cli->cli_Background && !csh.bg0)) {
         if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();
         cli->cli_CurrentInput = oldcur;
         cli->cli_Interactive = oldinter;
@@ -321,14 +415,26 @@ int main(void)
 {
     struct Task *me = FindTask(NULL);
     char *big;
+#ifdef CSH_USERSHELL
+    if (!shell_init()) return 20;
+#ifdef CSH_NOSMAIN
+    shell_end();
+    return 0;
+#endif
+#endif
     if ((char *)me->tc_SPUpper - (char *)me->tc_SPLower >= STACKSZ || !(big = AllocVec(STACKSZ, MEMF_ANY)))
-        return smain();
-    sss.stk_Lower = big;
-    sss.stk_Upper = (ULONG)(big + STACKSZ);
-    sss.stk_Pointer = (APTR)(big + STACKSZ);
-    StackSwap(&sss);
-    runswapped();
-    StackSwap(&sss);
-    FreeVec(big);
+        sret = smain();
+    else {
+        sss.stk_Lower = big;
+        sss.stk_Upper = (ULONG)(big + STACKSZ);
+        sss.stk_Pointer = (APTR)(big + STACKSZ);
+        StackSwap(&sss);
+        runswapped();
+        StackSwap(&sss);
+        FreeVec(big);
+    }
+#ifdef CSH_USERSHELL
+    shell_end();
+#endif
     return sret;
 }
