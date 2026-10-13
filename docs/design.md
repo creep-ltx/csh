@@ -36,7 +36,7 @@ replacement.**
 - Untested on the user's own scripts and daily use: the next session should ask what the user
   ran into.
 
-1. Read this file, then `Knowledge/amiga/writing-a-shell.md`.
+1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit (`docs/audit-2026-10-13.md`) lists 15 crash/leak bugs to fix first.**
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
 3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):
