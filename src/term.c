@@ -265,20 +265,27 @@ static void parse(int final)
 
 static int qroom(void) { return (kh - kt - 1 + KQ) % KQ; }
 
+/* One key's bytes at a time (as readline reads): what is typed after the
+ * Return stays in the console for whoever reads next - the command the
+ * line runs (Ask), or the prompt after it. A paste comes in big reads. */
 static void readnow(void)
 {
-    int guard = 16;
+    int guard = 64, before = kt;
     while (guard-- && qroom() > (int)sizeof ibuf && WaitForChar(tin, 0)) {
-        LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
+        LONG want = inpaste ? (LONG)sizeof ibuf - ilen : 1;
+        LONG n = Read(tin, ibuf + ilen, want);
         if (n <= 0) break;
         ilen += n;
         parse(0);
         if (ilen >= (int)sizeof ibuf - 8) { parse(1); if (ilen >= (int)sizeof ibuf - 8) ilen = 0; }
+        if (kt != before && !ilen && !inpaste) break;       /* a whole key: enough */
     }
     if (ilen) {         /* a lone Esc, or a sequence cut between reads: a moment for the rest */
-        if (WaitForChar(tin, 40000)) {
-            LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
-            if (n > 0) ilen += n;
+        int k = 16;
+        while (ilen && k-- && WaitForChar(tin, 40000)) {
+            LONG n = Read(tin, ibuf + ilen, inpaste ? (LONG)sizeof ibuf - ilen : 1);
+            if (n <= 0) break;
+            ilen += n;
             parse(0);
         }
         if (ilen && !inpaste) parse(1);
@@ -393,7 +400,9 @@ int term_open(BPTR in, BPTR out)
     SetMode(tin, 1);
     isopen = 1;
     term_outs("\x9b" "12{");                   /* resizes reported */
-    if (term_cterm) term_outs("\x1b[?2004h");  /* marked pastes, and xterm's modified arrows */
+    if (term_cterm) term_outs("\x1b[?2004h\x1b[?7727h");  /* marked pastes (and xterm's modified
+                                                 * arrows); keys typed while a command runs
+                                                 * stay keys for the prompt (CTerm 0.3b33) */
     term_outs("\x9b" "0 q");                   /* the window bounds, answered with CSI ... r */
     term_flush();
     for (tries = 0; tries < 10; tries++) {
@@ -430,6 +439,7 @@ void term_close(void)
 void term_cleanup(void)
 {
     term_close();
+    if (term_cterm > 0) { term_outs("\x1b[?7727l"); term_flush(); }   /* the ROM Shell's way again */
     if (wpkt) FreeDosObject(DOS_STDPKT, wpkt);
     if (rport) DeleteMsgPort(rport);
     if (paste) FreeVec(paste);
