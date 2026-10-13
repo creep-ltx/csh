@@ -1,0 +1,21 @@
+#!csh
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:
+RAM:pcat <RAM:bench-big | RAM:pcat | RAM:pcat >NIL:

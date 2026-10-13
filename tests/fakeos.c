@@ -20,6 +20,8 @@ int fake_quit = -1;
 void fake_reset(const char *in)
 {
     int i;
+    extern int fake_h_reset(void);
+    fake_h_reset();
     for (i = 0; i < nvars; i++) { free(vars[i].name); free(vars[i].val); }
     nvars = 0; outn = 0; out[0] = 0; ncap = 0; input = in ? in : "";
     memset(fake_rcs, 0, sizeof fake_rcs);
@@ -91,7 +93,7 @@ long os_run(struct cmdline *c)
     return fake_rcs[(unsigned char)c->cmd[0]];
 }
 
-long os_rom(const char *line, int bg)
+long os_rom_(const char *line, int bg)
 {
     char b[2048];
     snprintf(b, sizeof b, "[ROM%s|%s]\n", bg ? " &" : "", line);
@@ -191,3 +193,45 @@ int os_interactive(void) { return 0; }
 void os_history(void) { os_write("[history]\n", 10); }
 long os_ticks(void) { return 0; }
 int os_pwd(char *b, int n) { snprintf(b, n, "Work:"); return 1; }
+
+/* pipes and jobs: shown, not run. Handles: 1 the input, 2 the output,
+ * pipes 10, 11, ... (read, write), temp files 50.. */
+static int fakeh = 10;
+void *os_job_new(const char *text, int bg) { char b[300]; snprintf(b, sizeof b, "{job%s %s}", bg ? " &" : "", text); os_write(b, strlen(b)); return (void *)1; }
+long os_job_in(void *j) { (void)j; return 1; }
+long os_job_out(void *j) { (void)j; return 2; }
+int os_pipe(void *j, long *r, long *w) { (void)j; *r = fakeh++; *w = fakeh++; return 1; }
+int os_spawn(void *j, struct cmdline *c, long in, long out)
+{
+    char b[1200];
+    int n = c->arglen;
+    (void)j;
+    while (n && c->args[n - 1] == '\n') n--;
+    snprintf(b, sizeof b, "[spawn %s|%.*s in=%ld out=%ld%s%s%s%s]", c->cmd, n, c->args, in, out,
+             c->in[0] ? " <" : "", c->in, c->out[0] ? " >" : "", c->out);
+    os_write(b, strlen(b));
+    return 1;
+}
+void *os_select(long in, long out) { char b[64]; snprintf(b, sizeof b, "{sel in=%ld out=%ld}", in, out); os_write(b, strlen(b)); return (void *)1; }
+void os_unselect(void *s) { (void)s; os_write("{/sel}", 6); }
+static long lasttemp = 50;
+long os_tempout(void *j) { (void)j; return ++lasttemp; }
+long os_tempin(void *j) { (void)j; return lasttemp + 100; }
+void os_close(void *j, long h) { char b[32]; (void)j; if (h > 2) { snprintf(b, sizeof b, "{close %ld}", h); os_write(b, strlen(b)); } }
+void os_job_tmp(void *j, const char *name) { (void)j; (void)name; }
+long os_job_end(void *j, long rc, int li) { char b[64]; (void)j; snprintf(b, sizeof b, "{end rc=%ld%s}\n", rc, li ? " own" : ""); os_write(b, strlen(b)); return rc; }
+long job_list(void) { os_write("[jobs]\n", 7); return 0; }
+long job_fg(const char *s) { (void)s; os_write("[fg]\n", 5); return 0; }
+long job_kill(const char *s) { (void)s; os_write("[kill]\n", 7); return 0; }
+long job_waitall(void) { os_write("[wait]\n", 7); return 0; }
+int fake_h_reset(void) { fakeh = 10; lasttemp = 50; return 0; }
+long os_lastrun(void *j, struct cmdline *c, long in)
+{
+    char b[1200];
+    int n = c->arglen;
+    (void)j;
+    while (n && c->args[n - 1] == '\n') n--;
+    snprintf(b, sizeof b, "[last %s|%.*s in=%ld%s%s]", c->cmd, n, c->args, in, c->out[0] ? " >" : "", c->out);
+    os_write(b, strlen(b));
+    return fake_rcs[(unsigned char)c->cmd[0]];
+}

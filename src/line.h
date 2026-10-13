@@ -18,6 +18,7 @@ struct cmdline {
     char in[256], out[256], err[256];   /* redirection files, "" = none */
     int out_append, err_append, inout;  /* >>, *>>, <> (in and out one file) */
     int errtoout;             /* 2>&1, &>: the error stream goes where the output goes */
+    long inh;                 /* an input already open (a pipe's end): used, not closed */
     int pipe;                 /* an unquoted "|" word: a pipe */
 };
 

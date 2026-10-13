@@ -1,0 +1,628 @@
+/* job.c - pipes and jobs on the Amiga (docs/design.md "Pipes", "Jobs").
+ *
+ * Each Amiga command of a pipe runs in a process of its own with a CLI
+ * (NP_Cli: the Path and the local variables are copied), joined to the next
+ * by PIPE: (queue-handler). csh finds and loads the command itself
+ * (run_prepare, the same search as always); the child only runs it with
+ * RunCommand, exactly as csh would, and says when it is done. A script
+ * stage is handed to the ROM Shell in the child, as the ROM Shell runs
+ * scripts.
+ *
+ * The child's streams are closed by DOS when it ends (NP_CloseInput /
+ * NP_CloseOutput for a pipe or a file, not for csh's own console): closing
+ * them in the child first made DOS free them twice (exec alert 01000009,
+ * "freeing memory already freed", seen in FS-UAE on 3.2). So a T: file a
+ * child read may still be open a moment after it said it is done: csh
+ * tries again to delete it.
+ *
+ * The last stage of a pipe in the foreground runs in csh itself, as the
+ * ROM Shell does (a process fewer per pipe; csh's pipes were 4% slower than
+ * the ROM's with one each). While it runs, the console's break signal is
+ * pointed (ACTION_CHANGE_SIGNAL, as Execute and SystemTags do for a child)
+ * at a small relay task of csh's, which gives each Ctrl-C to every stage:
+ * the earlier ones and the one csh runs.
+ *
+ * Ctrl-C while csh waits goes to every stage still running. A job (&) runs
+ * the same way, not waited for; its input is NIL:. Its code is csh's, so
+ * csh does not unload itself while a job still runs: it leaves its code in
+ * memory (cli_Module 0) when it has to end with jobs running.
+ *
+ * Traps (Knowledge/amiga/cli-tools-and-archives.md): the reading end of a
+ * pipe is opened before the writer starts; WaitForChar never reports data
+ * on 3.2's PIPE:; a full RAM: breaks pipes. */
+#include <exec/memory.h>
+#include <dos/dosextens.h>
+#include <dos/dostags.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#include <string.h>
+#include "csh.h"
+#include "lang.h"
+
+#ifdef CSHDEBUG
+#include <clib/debug_protos.h>
+#define DBG(x) KPrintF x
+#else
+#define DBG(x)
+#endif
+
+struct stage {
+    struct stage *next;
+    struct prepared p;
+    struct Process *proc;
+    struct Task *parent;
+    char name[128];
+    char *args;
+    LONG arglen;
+    BPTR in, out, err;
+    int closein, closeout, errtoout;
+    volatile int done;
+    LONG rc, r2;
+    int detached, clinum;
+    char argstr[16];
+};
+
+struct job {
+    struct job *next;
+    int id, bg, nstages;
+    char text[160];
+    struct stage *st, **tail;
+    BPTR jin, jout;
+    int jinown;
+    char tmp[8][44];
+    int ntmp, tmpk;
+    char tempname[44];
+};
+
+static ULONG donesig;
+static int donebit = -1;
+static struct job *jobs;
+static long pipek;
+
+static void hexto(char *d, ULONG v)
+{
+    static const char hx[] = "0123456789abcdef";
+    int i;
+    for (i = 7; i >= 0; i--) { d[i] = hx[v & 15]; v >>= 4; }
+    d[8] = '\n'; d[9] = 0;
+}
+
+static ULONG hexfrom(const char *s)
+{
+    ULONG v = 0;
+    for (; *s; s++) {
+        int d = *s >= '0' && *s <= '9' ? *s - '0' : *s >= 'a' && *s <= 'f' ? *s - 'a' + 10 : -1;
+        if (d < 0) break;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+/* The child: runs its one command, closes its streams, says it is done. */
+static void stage_entry(void)
+{
+    struct stage *st = (struct stage *)hexfrom(GetArgStr());
+    struct Process *me = (struct Process *)FindTask(NULL);
+    struct CommandLineInterface *cli = Cli();
+    LONG rc, r2;
+    DBG(("child %lx start in %lx out %lx seg %lx\n", (ULONG)st, st->in, st->out, st->p.seg));
+    st->clinum = me->pr_TaskNum;
+    if (st->err) me->pr_CES = st->err;
+    else if (st->errtoout) me->pr_CES = Output();
+    if (st->p.seg) {
+        SetProgramName(st->name);
+        if (st->p.progdir) SetProgramDir(st->p.progdir);
+        if (cli) cli->cli_Module = st->p.seg;
+        SetIoErr(0);
+        rc = RunCommand(st->p.seg, st->p.stack, st->args, st->arglen);
+        r2 = IoErr();
+        DBG(("child %lx ran rc %ld\n", (ULONG)st, rc));
+        if (cli) {
+            if (!cli->cli_Module) st->detached = 1;
+            cli->cli_Module = 0;
+        }
+        SetProgramDir(0);
+    } else {
+        rc = SystemTags(st->p.romline, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
+        r2 = IoErr();
+    }
+    Flush(Output());
+    DBG(("child %lx flushed\n", (ULONG)st));
+    me->pr_CES = 0;
+    if (st->err) Close(st->err);
+    DBG(("child %lx closed\n", (ULONG)st));
+    st->rc = rc;
+    st->r2 = rc ? r2 : 0;
+    Forbid();
+    st->done = 1;
+    Signal(st->parent, donesig);
+    /* returns with Forbid on: the process ends in the ROM, not in csh's code */
+}
+
+static int jobinit(void)
+{
+    if (donebit >= 0) return 1;
+    if ((donebit = AllocSignal(-1)) < 0) return 0;
+    donesig = 1UL << donebit;
+    return 1;
+}
+
+void *os_job_new(const char *text, int bg)
+{
+    struct job *j;
+    if (!jobinit() || !(j = AllocVec(sizeof *j, MEMF_ANY | MEMF_CLEAR))) return NULL;
+    os_flush();
+    j->bg = bg;
+    j->tail = &j->st;
+    strncpy(j->text, text, sizeof j->text - 1);
+    if (bg) {
+        if ((j->jin = Open("NIL:", MODE_OLDFILE))) j->jinown = 1;
+    } else j->jin = Input();
+    /* a job writes to csh's own console (not into a $(...) file, which is
+     * gone when the job may still be writing) */
+    j->jout = bg ? csh.out : Output();
+    return j;
+}
+
+long os_job_in(void *job) { return ((struct job *)job)->jin; }
+long os_job_out(void *job) { return ((struct job *)job)->jout; }
+
+static int owned(struct job *j, BPTR h) { return h && h != j->jin && h != j->jout; }
+
+void os_close(void *job, long h)
+{
+    if (owned(job, h)) Close(h);
+}
+
+int os_pipe(void *job, long *readh, long *writeh)
+{
+    char name[48];
+    BPTR r, w;
+    (void)job;
+    strcpy(name, "PIPE:csh");
+    ltoa10(csh.me->pr_TaskNum, name + strlen(name));
+    strcat(name, "_");
+    ltoa10(++pipek, name + strlen(name));
+    /* the reading end first: a writer that is done before the reader opens
+     * can leave the reader waiting for ever */
+    if (!(r = Open(name, MODE_OLDFILE))) { PrintFault(IoErr(), name); return 0; }
+    if (!(w = Open(name, MODE_NEWFILE))) { PrintFault(IoErr(), name); Close(r); return 0; }
+    *readh = r; *writeh = w;
+    return 1;
+}
+
+static BPTR openfor(const char *name, LONG mode, int append)
+{
+    BPTR fh;
+    if (append && (fh = Open((STRPTR)name, MODE_READWRITE))) { Seek(fh, 0, OFFSET_END); return fh; }
+    return Open((STRPTR)name, mode);
+}
+
+int os_spawn(void *job, struct cmdline *c, long inh, long outh)
+{
+    struct prepared p;
+    if (!run_prepare(c, &p)) {
+        /* counted as a stage that ended at once with its rc (10) */
+        struct job *j = job;
+        struct stage *st = AllocVec(sizeof *st, MEMF_ANY | MEMF_CLEAR);
+        os_close(j, inh); os_close(j, outh);
+        if (st) { st->done = 1; st->rc = csh.rc ? csh.rc : 10; *j->tail = st; j->tail = &st->next; j->nstages++; }
+        return 0;
+    }
+    return job_spawn_prepared(job, c, inh, outh, &p);
+}
+
+/* A stage whose command run_prepare found and loaded: its own process. */
+int job_spawn_prepared(void *job, struct cmdline *c, long inh, long outh, struct prepared *pp)
+{
+    struct job *j = job;
+    struct stage *st = AllocVec(sizeof *st, MEMF_ANY | MEMF_CLEAR);
+    BPTR in = inh, out = outh;
+    if (!st) { run_release(pp, 0); os_close(j, in); os_close(j, out); return 0; }
+    st->p = *pp;
+    st->parent = (struct Task *)csh.me;
+    *j->tail = st; j->tail = &st->next;     /* linked even when it fails: its rc counts */
+    j->nstages++;
+    if (!in) in = Open("NIL:", MODE_OLDFILE);
+    if (c->in[0]) {
+        BPTR f = Open(c->in, c->inout ? MODE_READWRITE : MODE_OLDFILE);
+        if (!f) { PrintFault(IoErr(), c->in); goto fail; }
+        os_close(j, in);
+        in = f;
+    }
+    if (c->inout) {
+        os_close(j, out);
+        out = in;
+    } else if (c->out[0]) {
+        BPTR f = openfor(c->out, MODE_NEWFILE, c->out_append);
+        if (!f) { PrintFault(IoErr(), c->out); goto fail; }
+        os_close(j, out);
+        out = f;
+    }
+    if (c->err[0] && !(st->err = openfor(c->err, MODE_NEWFILE, c->err_append))) { PrintFault(IoErr(), c->err); goto fail; }
+    st->errtoout = c->errtoout;
+    strncpy(st->name, c->cmd, sizeof st->name - 1);
+    if (!(st->args = AllocVec(c->arglen + 1, MEMF_ANY))) goto fail;
+    memcpy(st->args, c->args, c->arglen + 1);
+    st->arglen = c->arglen;
+    st->in = in; st->out = out;
+    st->closein = owned(j, in);
+    st->closeout = owned(j, out) && out != in;
+    hexto(st->argstr, (ULONG)st);
+    st->proc = CreateNewProcTags(NP_Entry, (ULONG)stage_entry,
+                                 NP_Input, in, NP_Output, out,
+                                 NP_CloseInput, st->closein, NP_CloseOutput, st->closeout,
+                                 NP_Cli, TRUE, NP_Name, (ULONG)(j->bg ? "csh job" : "csh pipe"),
+                                 NP_StackSize, 6000, NP_Arguments, (ULONG)st->argstr,
+                                 TAG_END);
+    DBG(("spawned %lx proc %lx\n", (ULONG)st, (ULONG)st->proc));
+    if (!st->proc) { PrintFault(IoErr(), c->cmd); goto fail; }
+    return 1;
+fail:
+    run_release(&st->p, 0);
+    if (st->err) { Close(st->err); st->err = 0; }
+    if (owned(j, in)) Close(in);
+    if (owned(j, out) && out != in) Close(out);
+    st->done = 1;
+    st->rc = csh.rc ? csh.rc : 10;
+    return 0;
+}
+
+struct sel { BPTR oin, oout, in, out; };
+
+void *os_select(long in, long out)
+{
+    struct sel *s = AllocVec(sizeof *s, MEMF_ANY | MEMF_CLEAR);
+    if (!s) return NULL;
+    os_flush();
+    if (!in) in = s->in = Open("NIL:", MODE_OLDFILE);
+    s->oin = SelectInput(in);
+    if (out) s->oout = SelectOutput(out);
+    s->out = out;
+    return s;
+}
+
+void os_unselect(void *p)
+{
+    struct sel *s = p;
+    if (!s) return;
+    os_flush();
+    if (s->out) { Flush(s->out); SelectOutput(s->oout); }
+    SelectInput(s->oin);
+    if (s->in) Close(s->in);
+    FreeVec(s);
+}
+
+long os_tempout(void *job)
+{
+    struct job *j = job;
+    BPTR fh;
+    strcpy(j->tempname, "T:csh-pipe-");
+    ltoa10(csh.me->pr_TaskNum, j->tempname + strlen(j->tempname));
+    strcat(j->tempname, "-");
+    ltoa10(++j->tmpk, j->tempname + strlen(j->tempname));
+    if (!(fh = Open(j->tempname, MODE_NEWFILE))) { PrintFault(IoErr(), j->tempname); return 0; }
+    os_job_tmp(j, j->tempname);
+    return fh;
+}
+
+long os_tempin(void *job)
+{
+    return Open(((struct job *)job)->tempname, MODE_OLDFILE);
+}
+
+void os_job_tmp(void *job, const char *name)
+{
+    struct job *j = job;
+    if (j->ntmp < 8) strncpy(j->tmp[j->ntmp++], name, 43);
+}
+
+static int alldone(struct job *j)
+{
+    struct stage *s;
+    for (s = j->st; s; s = s->next) if (!s->done) return 0;
+    return 1;
+}
+
+static void breakall(struct job *j)
+{
+    struct stage *s;
+    Forbid();
+    for (s = j->st; s; s = s->next) if (!s->done && s->proc) Signal((struct Task *)s->proc, SIGBREAKF_CTRL_C);
+    Permit();
+}
+
+/* Waits for every stage; Ctrl-C goes on to each one still running. */
+static void waitjob(struct job *j)
+{
+    while (!alldone(j)) {
+        ULONG sig = Wait(donesig | SIGBREAKF_CTRL_C);
+        if (sig & SIGBREAKF_CTRL_C) breakall(j);
+    }
+}
+
+/* The last stage's rc; everything given back. */
+static LONG reap(struct job *j)
+{
+    struct stage *s, *n;
+    LONG rc = 0, r2 = 0;
+    int i;
+    for (s = j->st; s; s = n) {
+        n = s->next;
+        rc = s->rc; r2 = s->r2;
+        DBG(("reap %lx\n", (ULONG)s));
+        run_release(&s->p, s->detached);
+        if (s->args) FreeVec(s->args);
+        FreeVec(s);
+    }
+    for (i = 0; i < j->ntmp; i++) {     /* a child may hold it a moment longer */
+        int k;
+        for (k = 0; k < 25 && !DeleteFile(j->tmp[i]) && IoErr() == ERROR_OBJECT_IN_USE; k++) Delay(2);
+    }
+    if (j->jinown) Close(j->jin);
+    set_rc(rc, r2);
+    return rc;
+}
+
+long os_job_end(void *job, long lastrc, int lastinternal)
+{
+    struct job *j = job, **p;
+    LONG rc;
+    if (!j->bg) {
+        DBG(("wait job\n"));
+        waitjob(j);
+        DBG(("waited\n"));
+        rc = reap(j);
+        if (lastinternal || !j->nstages) rc = lastrc;
+        FreeVec(j);
+        set_rc(rc, csh.cli->cli_Result2);
+        return rc;
+    }
+    if (!j->st) { reap(j); FreeVec(j); return lastrc; }
+    {   /* the lowest free number */
+        int id = 1;
+        struct job *k;
+        for (;;) {
+            for (k = jobs; k && k->id != id; k = k->next) ;
+            if (!k) break;
+            id++;
+        }
+        j->id = id;
+    }
+    for (p = &jobs; *p; p = &(*p)->next) ;
+    *p = j;
+    {
+        char b[16];
+        struct stage *s;
+        int i, waited = 0;
+        /* the CLI numbers, as Run shows them ([CLI n]) */
+        for (s = j->st; s; s = s->next) while (!s->clinum && !s->done && waited++ < 50) Delay(1);
+        os_write("[", 1);
+        os_write(b, ltoa10(j->id, b));
+        os_write("]", 1);
+        for (s = j->st, i = 0; s; s = s->next) if (s->clinum) { os_write(" ", 1); os_write(b, ltoa10(s->clinum, b)); i++; }
+        os_write("\n", 1);
+        os_flush();
+    }
+    return 0;
+}
+
+
+/* ---- the break relay ---- */
+
+static struct Task *relay, *relayfor;
+static struct MsgPort *relayport;
+static struct job *relayjob;
+static volatile int relayquit, relaygone;
+static void *relaymem;
+
+static void relay_entry(void)
+{
+    for (;;) {
+        ULONG s = Wait(SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+        if (relayquit) break;
+        Forbid();
+        if ((s & SIGBREAKF_CTRL_C) && relayjob) breakall(relayjob);
+        Signal(relayfor, s & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F));
+        Permit();
+    }
+    Forbid();
+    relaygone = 1;
+    /* ends in exec (RemTask), not in csh's code */
+}
+
+static int relaystart(void)
+{
+    struct Task *t;
+    char *stk;
+    if (relay) return 1;
+    if (!(relaymem = AllocVec(sizeof(struct Task) + 2048 + 16, MEMF_PUBLIC | MEMF_CLEAR))) return 0;
+    if (!(relayport = CreateMsgPort())) { FreeVec(relaymem); relaymem = NULL; return 0; }
+    t = relaymem;
+    stk = (char *)(t + 1);
+    t->tc_Node.ln_Type = NT_TASK;
+    t->tc_Node.ln_Name = "csh break relay";
+    t->tc_Node.ln_Pri = csh.me->pr_Task.tc_Node.ln_Pri + 1;
+    t->tc_SPLower = stk;
+    t->tc_SPUpper = stk + 2048;
+    t->tc_SPReg = stk + 2048;
+    relayfor = (struct Task *)csh.me;
+    relayquit = relaygone = 0;
+    /* the console signals the port's task: the relay */
+    relayport->mp_SigTask = t;
+    relayport->mp_SigBit = SIGBREAKB_CTRL_C;
+    if (!AddTask(t, (APTR)relay_entry, NULL)) { DeleteMsgPort(relayport); relayport = NULL; FreeVec(relaymem); relaymem = NULL; return 0; }
+    relay = t;
+    return 1;
+}
+
+static void relaystop(void)
+{
+    if (!relay) return;
+    relayquit = 1;
+    Signal(relay, SIGBREAKF_CTRL_F);
+    while (!relaygone) Delay(1);
+    relay = NULL;
+    relayport->mp_SigTask = (struct Task *)csh.me;
+    DeleteMsgPort(relayport);
+    relayport = NULL;
+    FreeVec(relaymem);
+    relaymem = NULL;
+}
+
+/* The console's breaks to port (returns the one before), or 0 if it is no console. */
+static LONG changesignal(BPTR con, struct MsgPort *port)
+{
+    struct FileHandle *fh = BADDR(con);
+    if (!con || !fh->fh_Type || !IsInteractive(con)) return 0;
+    return DoPkt(fh->fh_Type, ACTION_CHANGE_SIGNAL, fh->fh_Arg1, (LONG)port, 0, 0, 0);
+}
+
+static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p);
+
+long os_lastrun(void *job, struct cmdline *c, long in) { return lastrun(job, c, in, NULL); }
+
+long job_lastrun_prepared(void *job, struct cmdline *c, long in, struct prepared *p) { return lastrun(job, c, in, p); }
+
+/* The last stage in csh itself, its input the pipe; Ctrl-C to every stage. */
+static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p)
+{
+    struct job *j = job;
+    LONG rc, old = 0;
+    BPTR con = csh.cli->cli_StandardInput;
+    int moved = 0;
+    if (!in) in = Open("NIL:", MODE_OLDFILE);
+    if (j->st && relaystart()) {
+        relayjob = j;
+        if ((old = changesignal(con, relayport))) moved = 1;
+    }
+    c->inh = in;
+    rc = p ? run_prepared(c, p) : run_cmd(c, 0);
+    c->inh = 0;
+    if (moved) changesignal(con, (struct MsgPort *)old);
+    relayjob = NULL;
+    if (owned(j, in)) Close(in);
+    return rc;
+}
+
+/* ---- jobs, fg, kill, wait; and the news at the prompt ---- */
+
+static struct job *jobfind(const char *spec)
+{
+    struct job *j;
+    long id;
+    if (!spec) {               /* the newest */
+        struct job *last = NULL;
+        for (j = jobs; j; j = j->next) last = j;
+        return last;
+    }
+    if (*spec == '%') spec++;
+    if (StrToLong((STRPTR)spec, &id) <= 0) return NULL;
+    for (j = jobs; j; j = j->next) if (j->id == id) return j;
+    return NULL;
+}
+
+static void unlink_(struct job *j)
+{
+    struct job **p;
+    for (p = &jobs; *p && *p != j; p = &(*p)->next) ;
+    if (*p) *p = j->next;
+}
+
+static void say(struct job *j, const char *what, LONG rc)
+{
+    char b[16];
+    os_write("[", 1);
+    os_write(b, ltoa10(j->id, b));
+    os_write("] ", 2);
+    os_write(what, strlen(what));
+    if (rc) { os_write(" (rc ", 5); os_write(b, ltoa10(rc, b)); os_write(")", 1); }
+    os_write("  ", 2);
+    os_write(j->text, strlen(j->text));
+    os_write("\n", 1);
+}
+
+/* At the prompt: the jobs that ended since, said and given back. */
+void job_news(void)
+{
+    struct job *j, *n;
+    for (j = jobs; j; j = n) {
+        n = j->next;
+        if (alldone(j)) {
+            LONG rc;
+            unlink_(j);
+            rc = reap(j);
+            say(j, "Done", rc);
+            FreeVec(j);
+        }
+    }
+    os_flush();
+}
+
+int job_running(void)
+{
+    struct job *j;
+    for (j = jobs; j; j = j->next) if (!alldone(j)) return 1;
+    return 0;
+}
+
+long job_list(void)
+{
+    struct job *j;
+    for (j = jobs; j; j = j->next) say(j, alldone(j) ? "Done" : "Running", 0);
+    return 0;
+}
+
+long job_fg(const char *spec)
+{
+    struct job *j = jobfind(spec);
+    LONG rc;
+    if (!j) { sh_error("fg: no such job", spec ? spec : ""); return 10; }
+    os_write(j->text, strlen(j->text));
+    os_write("\n", 1);
+    os_flush();
+    waitjob(j);
+    unlink_(j);
+    rc = reap(j);
+    FreeVec(j);
+    return rc;
+}
+
+long job_kill(const char *spec)
+{
+    struct job *j = jobfind(spec);
+    if (!j) { sh_error("kill: no such job", spec ? spec : ""); return 10; }
+    /* a Ctrl-C to each stage: a program that ignores it cannot be ended by force on the Amiga */
+    breakall(j);
+    return 0;
+}
+
+long job_waitall(void)
+{
+    struct job *j;
+    LONG rc = 0;
+    while ((j = jobs)) {
+        waitjob(j);
+        unlink_(j);
+        rc = reap(j);
+        FreeVec(j);
+    }
+    return rc;
+}
+
+/* csh ends with jobs still running: their code is csh's, so csh's code
+ * stays in memory (the ROM Shell does not unload a cli_Module of 0). */
+void job_leave(void)
+{
+    struct job *j, *n;
+    if (job_running()) {
+        csh.module = 0;
+        relaystop();
+        return;
+    }
+    for (j = jobs; j; j = n) { n = j->next; reap(j); FreeVec(j); }
+    jobs = NULL;
+    if (donebit >= 0) FreeSignal(donebit);
+    donebit = -1;
+    relaystop();
+}

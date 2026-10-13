@@ -42,9 +42,13 @@ void os_free(void *p) { if (p) FreeVec(p); }
 
 /* ---- variables ---- */
 
+/* A local variable whole (GetVar stops at a line end unless asked for a
+ * binary one: $(...) gives several lines); a global one (ENV:) as the ROM
+ * Shell reads it, up to its line end - those files often end in one. */
 int os_getvar(const char *name, char *buf, int size)
 {
-    LONG n = GetVar((STRPTR)name, buf, size, 0);
+    LONG n = GetVar((STRPTR)name, buf, size, GVF_LOCAL_ONLY | GVF_BINARY_VAR);
+    if (n < 0) n = GetVar((STRPTR)name, buf, size, GVF_GLOBAL_ONLY);
     return n < 0 ? -1 : n;
 }
 

@@ -73,6 +73,7 @@ int main(void)
     run("List #?.txt", "[List|#?.txt]\n");
     run("List *.txt", "[List|#?.txt]\n");
     run("List '*.txt'", "[List|\"**.txt\"]\n");
+    run("Type * >RAM:x", "[Type|* >RAM:x]\n");
     run("Echo \"say \\\"hi\\\"\"", "say \"hi\"\n");
     run("List DIRS SINCE=yesterday", "[List|DIRS SINCE=yesterday]\n");
     run("Copy a \"\"", "[Copy|a \"\"]\n");
@@ -85,8 +86,13 @@ int main(void)
     run("Type <<END\nline $x\nEND\n", "{heredoc T:hd1:line \n}[Type| <T:hd1]\n");
     run("x=1; Type <<'END'\nline $x\nEND\n", "{heredoc T:hd2:line $x\n}[Type| <T:hd2]\n");
     run("Type <<<word", "{heredoc T:hd3:word\n}[Type| <T:hd3]\n");
-    run("List | Sort", "[ROM|List | Sort]\n");
-    run("Wait 5 &", "[ROM &|Wait 5]\n");
+    run("List | Sort", "{job List | Sort}[spawn List| in=1 out=11][last Sort| in=10]{end rc=0 own}\n");
+    run("Wait 5 &", "{job & Wait 5}[spawn Wait|5 in=1 out=2]{end rc=0}\n");
+    run("List Work: | Search * x | Sort", "{job List Work: | Search * x | Sort}[spawn List|Work: in=1 out=11][spawn Search|* x in=10 out=13][last Sort| in=12]{end rc=0 own}\n");
+    run("List | while read l; do echo \"got $l\"; done", "{job List | while ...}[spawn List| in=1 out=11]{sel in=10 out=0}{/sel}{close 10}{end rc=0 own}\n");
+    run("echo hi | Sort", "{job echo hi | Sort}{sel in=1 out=51}hi\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\n");
+    run("List >f.txt | Sort", "{job List | Sort}[spawn List| in=1 out=11 >f.txt][last Sort| in=10]{end rc=0 own}\n");
+    run("jobs; fg; kill %1; wait; wait 5", "[jobs]\n[fg]\n[kill]\n[wait]\n[wait|5]\n");
     /* control */
     run("if true; then echo yes; else echo no; fi", "yes\n");
     run("if false; then echo yes; elif true; then echo elif; else echo no; fi", "elif\n");
@@ -105,6 +111,9 @@ int main(void)
     run("for a in x y; do for b in 1 2; do [ $b = 2 ] && continue 2; echo $a$b; done; done", "x1\ny1\n");
     run("case foo.txt in *.c) echo c;; *.txt|*.doc) echo text;; *) echo other;; esac", "text\n");
     run("case X in [a-z]) echo low;; [A-Z]) echo up;; esac", "up\n");
+    run("j='[1] 6'; case \"$j\" in \"[1] \"*) echo yes;; *) echo no;; esac", "yes\n");
+    run("case 'a*b' in 'a*b') echo literal;; esac; case axb in 'a*b') echo wrong;; a*b) echo glob;; esac", "literal\nglob\n");
+    run("f='x.*'; echo ${f%'.*'} ${f%.*}", "x x\n");
     run("{ echo a; echo b; }", "a\nb\n");
     run("(echo sub)", "sub\n");
     run("if true\nthen\n  echo multi\nfi\n", "multi\n");

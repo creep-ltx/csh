@@ -867,6 +867,7 @@ typedef struct {
     Str cur;
     int quoted, pattern, have;
     int split;                  /* unquoted expansions split into words */
+    int patmode;                /* a pattern: quoted * ? [ \ get a \ (literal for gmatch) */
 } Exp;
 
 static void endfield(Exp *e)
@@ -890,11 +891,26 @@ static void endfield(Exp *e)
     e->quoted = e->pattern = e->have = 0;
 }
 
+/* A character that was quoted: in a pattern its meaning as a wildcard goes. */
+static void qput(Exp *e, char c)
+{
+    if (e->patmode && (c == '*' || c == '?' || c == '[' || c == '\\')) sputc(&e->cur, '\\');
+    sputc(&e->cur, c);
+}
+
+static void qputs(Exp *e, const char *s, int n)
+{
+    int i;
+    if (!e->patmode) { sput(&e->cur, s, n); return; }
+    for (i = 0; i < n; i++) qput(e, s[i]);
+}
+
 /* Text an expansion gave: quoted it is kept whole, else split on white space. */
 static void addtext(Exp *e, const char *s, int n, int inquotes)
 {
     int i;
-    if (inquotes || !e->split) { sput(&e->cur, s, n); e->have = 1; return; }
+    if (inquotes) { qputs(e, s, n); e->have = 1; return; }
+    if (!e->split) { sput(&e->cur, s, n); e->have = 1; return; }
     for (i = 0; i < n; i++) {
         char c = s[i];
         if (c == ' ' || c == '\t' || c == '\n') {
@@ -996,7 +1012,8 @@ static void brace(Exp *e, const char *s, int n, int inquotes)
             const char *pat = s + i + 1 + longest;
             char *v = val.s ? val.s : "", *p;
             memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
-            expand_into(&sub, pat, n - (pat - s), 1);
+            sub.patmode = 1;
+            expand_into(&sub, pat, n - (pat - s), 0);
             p = sub.cur.s ? sub.cur.s : "";
             if (s[i] == '#') {
                 for (k = longest ? len : 0; longest ? k >= 0 : k <= len; k += longest ? -1 : 1) {
@@ -1114,16 +1131,16 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
         }
         if (inquotes) {
             if (c == '\\' && i + 1 < n && (s[i + 1] == '$' || s[i + 1] == '`' || s[i + 1] == '"' || s[i + 1] == '\\' || s[i + 1] == '\n')) {
-                if (s[i + 1] != '\n') sputc(&e->cur, s[i + 1]);
+                if (s[i + 1] != '\n') qput(e, s[i + 1]);
                 i += 2; e->have = 1; continue;
             }
-            sputc(&e->cur, c); e->have = 1; i++;
+            qput(e, c); e->have = 1; i++;
             continue;
         }
         if (c == '\'') {
             int j = i + 1;
             while (j < n && s[j] != '\'') j++;
-            sput(&e->cur, s + i + 1, j - i - 1);
+            qputs(e, s + i + 1, j - i - 1);
             e->have = 1; e->quoted = 1;
             i = j + 1;
             continue;
@@ -1147,7 +1164,7 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
             continue;
         }
         if (c == '\\' && i + 1 < n) {
-            if (s[i + 1] != '\n') { sputc(&e->cur, s[i + 1]); e->quoted = 1; }
+            if (s[i + 1] != '\n') { qput(e, s[i + 1]); e->quoted = 1; }
             e->have = 1;
             i += 2;
             continue;
@@ -1184,7 +1201,7 @@ static char *expand1(Arena *ar, const char *word, int *quoted)
 static void amigaarg(Str *b, struct shfield *f)
 {
     int i, needq = f->quoted || f->len == 0;
-    if (f->pattern && !f->quoted) {            /* *.txt -> #?.txt: the program matches */
+    if (f->pattern && !f->quoted && !(f->len == 1 && f->s[0] == '*')) {   /* *.txt -> #?.txt; * alone is the console */
         for (i = 0; i < f->len; i++) {
             if (f->s[i] == '*') sput(b, "#?", 2);
             else sputc(b, f->s[i]);
@@ -1281,35 +1298,6 @@ static void deffunc(Node *n)
     nf->ar = ar;
     nf->next = funcs;
     funcs = nf;
-}
-
-/* A word rendered back for the ROM Shell (pipes and & for now). */
-static int romline(Arena *ar, Node *n, Str *b)
-{
-    Exp e;
-    int i;
-    Redir *r;
-    if (n->type == N_PIPE) {
-        if (!romline(ar, n->a, b)) return 0;
-        sput(b, " | ", 3);
-        return romline(ar, n->b, b);
-    }
-    if (n->type != N_SIMPLE || !n->nwords) { sh_error("only plain commands in a pipe or with & (for now)", ""); return 0; }
-    memset(&e, 0, sizeof e); e.ar = ar;
-    for (i = 0; i < n->nwords; i++) expand(&e, n->words[i], 1);
-    for (i = 0; i < e.nf; i++) {
-        if (i) sputc(b, ' ');
-        if (i == 0) sput(b, e.f[0].s, e.f[0].len); else amigaarg(b, &e.f[i]);
-    }
-    for (r = n->redirs; r; r = r->next) {
-        char *w = r->word ? expand1(ar, r->word, NULL) : "";
-        const char *op = r->op == R_IN ? " <" : r->op == R_OUT ? " >" : r->op == R_APP ? " >>" :
-                         r->op == R_ERR ? " *>" : r->op == R_ERRAPP ? " *>>" : NULL;
-        if (!op) { sh_error("that redirection is not for a pipe (yet)", ""); return 0; }
-        sput(b, op, strlen(op));
-        sput(b, w, strlen(w));
-    }
-    return 1;
 }
 
 static long run_simple(Node *n)
@@ -1480,6 +1468,130 @@ static long loopbody(Node *body)
     return r;
 }
 
+/* ---- pipes and jobs --------------------------------------------------------------- */
+
+/* The text of a command, near enough, for "jobs". */
+static void nodetext(Node *n, Str *b)
+{
+    int i;
+    if (!n) return;
+    switch (n->type) {
+    case N_SIMPLE:
+        for (i = 0; i < n->nwords; i++) { if (i) sputc(b, ' '); sput(b, n->words[i], strlen(n->words[i])); }
+        break;
+    case N_PIPE: nodetext(n->a, b); sput(b, " | ", 3); nodetext(n->b, b); break;
+    case N_FOR: sput(b, "for ...", 7); break;
+    case N_WHILE: sput(b, "while ...", 9); break;
+    case N_IF: sput(b, "if ...", 6); break;
+    default: sput(b, "{ ... }", 7); break;
+    }
+}
+
+static int flatten(Node *n, Node **st, int max)
+{
+    int k;
+    if (n->type != N_PIPE) { st[0] = n; return 1; }
+    k = flatten(n->a, st, max);
+    if (k < max) st[k++] = n->b;
+    return k;
+}
+
+/* Is a stage csh's own (a built-in, function, alias, block)? */
+static int internal(Arena *ar, Node *n)
+{
+    char *w, ab[8];
+    int q;
+    if (n->type != N_SIMPLE) return 1;
+    if (!n->nwords) return 1;
+    w = expand1(ar, n->words[0], &q);
+    if (findfunc(w) || builtin_find(w) >= 0) return 1;
+    if (!q && os_getalias(w, ab, sizeof ab) >= 0) return 1;
+    return 0;
+}
+
+/* An Amiga command's stage: its words and redirections as a cmdline. */
+static int stagecmd(Arena *ar, Node *n, struct cmdline *c, void *job)
+{
+    Exp e;
+    Str a;
+    char tmp[4][40];
+    int ntmp = 0, i;
+    memset(&e, 0, sizeof e); e.ar = ar;
+    for (i = 0; i < n->nwords && !aborted; i++) expand(&e, n->words[i], 1);
+    if (aborted || !e.nf) return 0;
+    if (!redirs(ar, n->redirs, c, tmp, &ntmp)) return 0;
+    for (i = 0; i < ntmp; i++) os_job_tmp(job, tmp[i]);
+    memset(&a, 0, sizeof a); a.ar = ar;
+    for (i = 1; i < e.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &e.f[i]); }
+    if (a.n + 2 >= (int)sizeof c->args || e.f[0].len >= (int)sizeof c->cmd) { sh_error("line too long", ""); return 0; }
+    memcpy(c->cmd, e.f[0].s, e.f[0].len); c->cmd[e.f[0].len] = 0;
+    if (a.s) memcpy(c->args, a.s, a.n);
+    c->args[a.n] = '\n'; c->args[a.n + 1] = 0;
+    c->arglen = a.n + 1;
+    return 1;
+}
+
+/* a | b | c, and anything with &: an Amiga command runs in a process of
+ * its own, joined to the next by PIPE:; csh's own stage runs in csh (the
+ * last one reading the pipe as it comes, one in the middle into a T: file
+ * the next one reads). The rc is the last stage's. */
+static long pipeline(Node *n, int bg)
+{
+    Arena ar = { NULL };
+    Node *st[16];
+    Str text;
+    void *job;
+    long in, r = 0;
+    int ns, i, lastint = 0;
+    memset(&text, 0, sizeof text); text.ar = &ar;
+    ns = flatten(n, st, 16);
+    nodetext(n, &text);
+    if (!(job = os_job_new(text.s ? text.s : "", bg))) { afree(&ar); return 20; }
+    in = os_job_in(job);
+    for (i = 0; i < ns && !aborted; i++) {
+        int last = i == ns - 1;
+        if (internal(&ar, st[i])) {
+            void *s;
+            if (bg) { sh_error("csh's own commands cannot run with & (yet):", text.s); os_close(job, in); r = 10; break; }
+            if (last) {
+                s = os_select(in, 0);
+                r = exec(st[i]);
+                os_unselect(s);
+                os_close(job, in);
+                lastint = 1;
+            } else {
+                long out = os_tempout(job);
+                if (!out) { os_close(job, in); r = 20; break; }
+                s = os_select(in, out);
+                exec(st[i]);
+                os_unselect(s);
+                os_close(job, out);
+                os_close(job, in);
+                in = os_tempin(job);
+            }
+        } else {
+            struct cmdline *c = aalloc(&ar, sizeof *c);
+            long out, next = 0;
+            /* a stage that cannot start: the next one reads nothing (in 0 = NIL:) */
+            if (!c || !stagecmd(&ar, st[i], c, job)) { os_close(job, in); in = 0; r = 10; if (last) break; continue; }
+            if (sh_opt_x) { sh_print("+ "); sh_print(c->cmd); sh_print(" "); sh_printn(c->args, c->arglen - 1); sh_print("\n"); }
+            if (last && !bg) {          /* in csh itself, as the ROM Shell does */
+                r = os_lastrun(job, c, in);
+                lastint = 1;
+                break;
+            }
+            if (last) out = os_job_out(job);
+            else if (!os_pipe(job, &next, &out)) { os_close(job, in); r = 20; break; }
+            if (!os_spawn(job, c, in, out)) r = sh_rc();
+            in = next;
+        }
+    }
+    r = os_job_end(job, r, lastint);
+    afree(&ar);
+    setrc(r);
+    return r;
+}
+
 static long exec(Node *n)
 {
     long r = 0;
@@ -1524,16 +1636,10 @@ static long exec(Node *n)
         r = cond(n->a) ? 0 : SH_FALSE;
         setrc(r);
         return r;
-    case N_PIPE: case N_BG: {
-        Arena ar = { NULL };
-        Str b;
-        memset(&b, 0, sizeof b); b.ar = &ar;
-        if (romline(&ar, n->type == N_BG ? n->a : n, &b)) r = os_rom(b.s, n->type == N_BG);
-        else r = 10;
-        afree(&ar);
-        setrc(r);
-        return r;
-    }
+    case N_PIPE:
+        return pipeline(n, 0);
+    case N_BG:
+        return pipeline(n->a, 1);
     case N_GROUP: case N_SUB:
         return n->a ? exec(n->a) : (setrc(0), 0);
     case N_IF:
@@ -1598,9 +1704,10 @@ static long exec(Node *n)
         for (c = n->cases; c; c = c->next) {
             int i, hit = 0;
             for (i = 0; i < c->npats && !hit; i++) {
-                int q;
-                char *p = expand1(&ar, c->pats[i], &q);
-                hit = q ? !strcmp(p, w) : gmatch(p, w, 0);
+                Exp pe;
+                memset(&pe, 0, sizeof pe); pe.ar = &ar; pe.patmode = 1;
+                expand(&pe, c->pats[i], 0);
+                hit = gmatch(pe.nf ? pe.f[0].s : "", w, 0);
             }
             if (hit) { r = exec(c->body); break; }
         }

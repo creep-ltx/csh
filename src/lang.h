@@ -40,6 +40,27 @@ void os_quit(long rc);                           /* exit at the prompt: csh ends
 int os_interactive(void);
 void os_history(void);
 
+/* pipes and jobs (job.c on the Amiga). Handles are BPTRs as longs. A
+ * stage's in and out are handed to os_spawn, which closes them when it is
+ * done, except the job's own (os_job_in / os_job_out). */
+void *os_job_new(const char *text, int bg);
+long os_job_in(void *job);               /* the first stage reads here */
+long os_job_out(void *job);              /* the last stage writes here */
+int os_pipe(void *job, long *readh, long *writeh);
+int os_spawn(void *job, struct cmdline *c, long in, long out);   /* 0 = it could not start (said) */
+long os_lastrun(void *job, struct cmdline *c, long in);   /* the last Amiga command, run in csh */
+void *os_select(long in, long out);      /* csh's own stage: these streams for a while */
+void os_unselect(void *s);
+long os_tempout(void *job);              /* csh's own stage in the middle writes a T: file ... */
+long os_tempin(void *job);               /* ... the next stage reads it */
+void os_close(void *job, long h);        /* closed unless it is the job's own */
+void os_job_tmp(void *job, const char *name);   /* deleted when the job ends */
+long os_job_end(void *job, long lastrc, int lastinternal);   /* waits (Ctrl-C to each) or goes to the background */
+long job_list(void);                     /* jobs */
+long job_fg(const char *spec);           /* fg [%n] */
+long job_kill(const char *spec);         /* kill [%n]: Ctrl-C to each stage */
+long job_waitall(void);                  /* wait */
+
 /* ---- lang.c ---- */
 struct shfield { char *s; int len; char quoted, pattern; };
 

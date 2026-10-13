@@ -1,0 +1,18 @@
+FailAt 30
+RAM:pcat <RAM:inner.key | RAM:pcat >RAM:pp1
+Echo "rc $RC"
+Type RAM:pp1
+RAM:rcx 5 | RAM:pcat >RAM:pp1
+Echo "rc $RC"
+Type RAM:pp1
+Echo hi | RAM:rcx 7
+Echo "rc $RC"
+nosuchcmd | RAM:pcat >RAM:pp1
+Echo "rc $RC"
+RAM:pcat <RAM:inner.key | nosuch2
+Echo "rc $RC"
+Echo "a | b" | RAM:pcat >RAM:pp1
+Type RAM:pp1
+RAM:pcat <RAM:inner.key | RAM:pcat | RAM:pcat >RAM:pp1 ; a comment | not a pipe
+Type RAM:pp1
+Delete RAM:pp1 QUIET

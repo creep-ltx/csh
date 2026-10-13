@@ -128,7 +128,18 @@ static int smain(void)
         if (IsInteractive(cli->cli_StandardInput)) SetMode(cli->cli_StandardInput, 0);
     }
 
-    while (!csh.quit) {
+    for (;;) {
+        if (csh.quit) {
+            /* exit with jobs running: said once; a second exit leaves them be */
+            static int warned;
+            if (job_running() && !warned && editing > 0) {
+                warned = 1;
+                csh.quit = 0;
+                FPuts(csh.out, "csh: jobs still run (jobs, fg, kill); exit again to leave them\n");
+                continue;
+            }
+            break;
+        }
         int inter = !csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput;
         if (cli->cli_Background && !bg0) break;           /* EndCLI / EndShell */
         if (csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput) break;
@@ -138,6 +149,7 @@ static int smain(void)
                 editing = term_possible(cli->cli_StandardInput, csh.out);
                 if (editing) editor_start();
             }
+            job_news();
             if (editing) {
                 int n;
                 SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
@@ -201,6 +213,8 @@ static int smain(void)
         SetSignal(0, SIGBREAKF_CTRL_C);
     }
 
+    job_leave();
+    if (!csh.module) cli->cli_Module = 0;   /* jobs still run csh's code: it stays in memory */
     if (editing > 0) { hist_save(); term_cleanup(); }
     if (!(cli->cli_Background && !bg0)) {
         if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();

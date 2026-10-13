@@ -9,6 +9,7 @@
  *    proper CLI: the ROM's If, Skip and Execute then move cli_CurrentInput
  *    and csh's loop simply reads on;
  *  - a pipe is still handed to the ROM Shell (step 5 brings csh's own). */
+#include <exec/memory.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <dos/dostags.h>
@@ -17,6 +18,7 @@
 #include <string.h>
 #include "csh.h"
 #include "edit.h"
+#include "lang.h"
 
 struct pathnode { BPTR next; BPTR lock; };   /* cli_CommandDir's list */
 
@@ -195,7 +197,7 @@ static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir,
     /* the defaults are the streams of the moment: csh points them elsewhere
      * for a redirected loop or block, or $(...) */
     Flush(Output());
-    oldin = SelectInput(in ? in : Input());
+    oldin = SelectInput(in ? in : c->inh ? (BPTR)c->inh : Input());
     oldout = SelectOutput(out ? out : Output());
     oldces = csh.me->pr_CES;
     if (err) csh.me->pr_CES = err;
@@ -309,6 +311,92 @@ static int builtin(struct cmdline *c)
     return 0;
 }
 
+/* For a pipe stage or a job: the command found and loaded, not run (a
+ * process of its own runs it, job.c). Fills *p; returns 0 when it cannot
+ * be run (said, rc set). A script or ARexx file is given as a ROM Shell
+ * line instead (p->romline), as the ROM Shell runs those. */
+int run_prepare(struct cmdline *c, struct prepared *p)
+{
+    static struct FileInfoBlock *fib;
+    struct Segment *seg = NULL;
+    BPTR lock = 0, where;
+    const char *lname;
+    int f;
+    memset(p, 0, sizeof *p);
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 0;
+    f = find(c->cmd, 0, &seg, &lock, fib, &where, &lname);
+    p->stack = csh.cli->cli_DefaultStack * 4;
+    if (p->stack < 4000) p->stack = 4000;
+    if (f == F_RES) {
+        p->seg = seg->seg_Seg;
+        p->res = seg;
+        return 1;
+    }
+    if (f == F_FILE) {
+        if (fib->fib_Protection & FIBF_SCRIPT) {
+            NameFromLock(lock, p->romline, sizeof p->romline - 4);
+            UnLock(lock);
+            if (lang_isscript(p->romline)) {
+                char path[256];
+                strcpy(path, p->romline);
+                strcpy(p->romline, "csh FROM ");
+                quoted(p->romline + 9, sizeof p->romline - 9, path, c->args);
+            } else {
+                char path[256];
+                strcpy(path, p->romline);
+                quoted(p->romline, sizeof p->romline, path, c->args);
+            }
+            return 1;
+        }
+        if (!(fib->fib_Protection & FIBF_EXECUTE)) {
+            BPTR old = where ? CurrentDir(where) : 0;
+            p->seg = LoadSeg((STRPTR)lname);
+            if (where) CurrentDir(old);
+        }
+        if (!p->seg) {
+            LONG e = fib->fib_Protection & FIBF_EXECUTE ? ERROR_FILE_NOT_OBJECT : IoErr();
+            if (e == ERROR_OBJECT_WRONG_TYPE) e = ERROR_FILE_NOT_OBJECT;
+            UnLock(lock);
+            PrintFault(e, c->cmd);
+            set_rc(10, e);
+            return 0;
+        }
+        p->progdir = ParentDir(lock);
+        UnLock(lock);
+        return 1;
+    }
+    if (f == F_DIR) UnLock(lock);
+    Printf("%s: Unknown command\n", c->cmd);
+    set_rc(10, ERROR_OBJECT_NOT_FOUND);
+    return 0;
+}
+
+/* Runs what run_prepare took, on csh's own process, and gives it back. */
+LONG run_prepared(struct cmdline *c, struct prepared *p)
+{
+    int det = 0;
+    LONG rc;
+    if (p->seg) {
+        rc = run_seg(p->seg, c->cmd, c, p->progdir, &det);
+        run_release(p, det);
+        return rc;
+    }
+    Flush(Output());
+    rc = SystemTags(p->romline, SYS_Input, c->inh ? (BPTR)c->inh : Input(), SYS_Output, Output(), TAG_END);
+    set_rc(rc, IoErr());
+    run_release(p, 0);
+    return rc;
+}
+
+/* What run_prepare took: unloaded, the resident count lowered, the dir freed. */
+void run_release(struct prepared *p, int detached)
+{
+    if (p->res) resident_done(p->res);
+    else if (p->seg && !detached) UnLoadSeg(p->seg);
+    if (p->progdir) UnLock(p->progdir);
+    p->seg = 0; p->res = NULL; p->progdir = 0;
+}
+
 /* Runs one command already split up (the ROM's rules or csh's language):
  * the search, then RunCommand. Returns the rc (also in $RC). */
 LONG run_cmd(struct cmdline *c, int depth)
@@ -383,6 +471,62 @@ LONG run_cmd(struct cmdline *c, int depth)
     return rc;
 }
 
+/* a | b | c in an Amiga script: each stage split by the ROM's rules, run
+ * by job.c as csh's own pipes are (the earlier stages in processes of
+ * their own, the last in csh). Faster than handing the line to the ROM
+ * Shell, which costs a Shell more. */
+/* a | b | c in an Amiga script: each stage split by the ROM's rules and
+ * found and loaded first - one missing, none runs (rc 10), as the ROM Shell
+ * does - then run by job.c as csh's own pipes are (the earlier stages in
+ * processes of their own, the last in csh). Faster than handing the line
+ * to the ROM Shell, which costs a Shell more. */
+#define MAXSTAGES 16
+static LONG amiga_pipe(const char *line)
+{
+    struct stagebuf { struct cmdline c; struct prepared p; } *sb;
+    char seg[LINE_MAX];
+    const char *p = line, *start = line;
+    void *job;
+    long in, rc = 0;
+    int q = 0, n = 0, i, ok = 1;
+    if (!(sb = AllocVec(MAXSTAGES * sizeof *sb, MEMF_ANY | MEMF_CLEAR))) return 20;
+    for (;;) {
+        int last = 0;
+        for (;; p++) {
+            if (!*p || *p == '\n' || (!q && *p == ';')) { last = 1; break; }
+            if (*p == '"') q = !q;
+            else if (q && *p == '*' && p[1]) p++;
+            else if (!q && *p == '|' && (p == line || p[-1] == ' ' || p[-1] == '\t') && (p[1] == ' ' || p[1] == '\t')) break;
+        }
+        if (p - start >= (int)sizeof seg || n == MAXSTAGES) { Printf("csh: line too long\n"); ok = 0; break; }
+        memcpy(seg, start, p - start); seg[p - start] = 0;
+        if (line_parse(seg, &sb[n].c) > 0) {
+            if (!run_prepare(&sb[n].c, &sb[n].p)) { ok = 0; break; }
+            n++;
+        }
+        if (last) break;
+        start = ++p;
+    }
+    if (!ok || !n) {
+        for (i = 0; i < n; i++) run_release(&sb[i].p, 0);
+        FreeVec(sb);
+        return ok ? 0 : 10;
+    }
+    if (!(job = os_job_new(line, 0))) { for (i = 0; i < n; i++) run_release(&sb[i].p, 0); FreeVec(sb); return 20; }
+    in = os_job_in(job);
+    for (i = 0; i < n; i++) {
+        if (i == n - 1) { rc = job_lastrun_prepared(job, &sb[i].c, in, &sb[i].p); break; }
+        {
+            long next, out;
+            if (!os_pipe(job, &next, &out)) { int k; os_close(job, in); for (k = i; k < n; k++) run_release(&sb[k].p, 0); rc = 20; break; }
+            job_spawn_prepared(job, &sb[i].c, in, out, &sb[i].p);
+            in = next;
+        }
+    }
+    FreeVec(sb);
+    return os_job_end(job, rc, 1);
+}
+
 /* A line by the ROM Shell's rules (Amiga scripts): alias, $vars, backquotes,
  * split, run; FailAt ends the script. */
 void run_line(const char *line, int depth)
@@ -406,11 +550,8 @@ void run_line(const char *line, int depth)
     }
     if (line_parse(l, c) <= 0) return;
 
-    if (c->pipe) {          /* for now the ROM Shell runs pipes (step 5: csh's own) */
-        Flush(Output());
-        rc = SystemTags((STRPTR)l, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
-        set_rc(rc, IoErr());
-    } else if (builtin(c)) return;
+    if (c->pipe) rc = amiga_pipe(l);
+    else if (builtin(c)) return;
     else rc = run_cmd(c, depth);
     /* a script ends when a command fails at or over FailAt */
     if (!interactive && rc >= csh.cli->cli_FailLevel && !csh.quit) {

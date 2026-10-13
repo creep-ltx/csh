@@ -1,0 +1,21 @@
+one two
+pcat 8
+a
+b
+c
+pcat 6
+pcat 13
+rc of pcat last: 0
+rc of rcx last: 7
+lines read in csh: 3
+captured: inner
+pcat 6
+pcat 13
+to a file
+pcat 10
+nosuchcmd: Unknown command
+pcat 0
+after unknown: 0
+job started
+[1] Running  Wait 1
+jobs done

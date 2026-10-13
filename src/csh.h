@@ -33,6 +33,25 @@ void run_line(const char *line, int depth);
 LONG run_cmd(struct cmdline *c, int depth);
 LONG run_internal(const char *name, const char *args, struct cmdline *redir);
 
+/* run.c: a command found and loaded for a pipe stage or a job (job.c) */
+struct prepared {
+    BPTR seg;                   /* the code (0: romline instead) */
+    struct Segment *res;        /* a resident entry: its count raised */
+    BPTR progdir;
+    LONG stack;
+    char romline[512];          /* a script: the line for the ROM Shell */
+};
+int run_prepare(struct cmdline *c, struct prepared *p);
+void run_release(struct prepared *p, int detached);
+LONG run_prepared(struct cmdline *c, struct prepared *p);
+
+/* job.c */
+void job_news(void);
+int job_running(void);
+void job_leave(void);
+int job_spawn_prepared(void *job, struct cmdline *c, long in, long out, struct prepared *p);
+long job_lastrun_prepared(void *job, struct cmdline *c, long in, struct prepared *p);
+
 /* lang.c: the csh language */
 int lang_isscript(const char *path);              /* "#!csh" on its first line */
 LONG lang_runscript(const char *path, struct cmdline *c);
