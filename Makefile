@@ -25,6 +25,15 @@ build-shell/shellstart.o: src/shellstart.S
 	@mkdir -p build-shell
 	$(CC) -m68020 -c $< -o $@
 
+# cshell-ext.rom: cshell as a ROM module, for the emulator (tests/romuae.sh)
+cshell-ext.rom: cshell build-shell/rominit.bin tools/mkextrom.py
+	python3 tools/mkextrom.py cshell build-shell/rominit.bin $@
+
+build-shell/rominit.bin: src/rominit.S
+	@mkdir -p build-shell
+	$(CC) -m68020 -c $< -o build-shell/rominit.o
+	$(AMIGA)/bin/m68k-amigaos-objcopy -O binary -j .text build-shell/rominit.o $@
+
 build-shell/%.o: src/%.c src/csh.h src/line.h src/edit.h src/lang.h
 	@mkdir -p build-shell
 	$(CC) $(SFLAGS) -c $< -o $@

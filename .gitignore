@@ -11,3 +11,4 @@ build-shell/
 /cshell
 tests/probe/sigs
 tests/probe/bootshell
+/cshell-ext.rom

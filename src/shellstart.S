@@ -39,6 +39,41 @@ dp_Port		=	4
 		.text
 
 start:
+| The first Shell of a boot is the ROM's: it puts its internal commands
+| (Run, CD, Echo...) into the resident list when it starts, and nothing
+| else does. With none there yet (no "CD"), this start goes to the ROM
+| Shell's own code (the BootShell entry), the start-up packet untaken.
+| For cshell in a ROM (rominit.S): the boot Shell starts through "shell".
+		movem.l	d0/a0,-(sp)
+		movel	4:W,a6
+		lea	dosname(pc),a1
+		moveq	#36,d0
+		jsr	-552(a6)		| OpenLibrary
+		move.l	d0,a5
+		tst.l	d0
+		beq	ours
+		exg	a5,a6
+		lea	cdname(pc),a0
+		bsr	sysseg
+		bne	ours1			| CD is there: the ROM Shell has run; cshell
+		lea	bootname(pc),a0
+		bsr	sysseg
+		beq	ours1
+		move.l	d0,a0
+		move.l	8(a0),d0		| seg_Seg
+		beq	ours1
+		lsl.l	#2,d0
+		addq.l	#4,d0
+		move.l	d0,a2			| the BootShell's code
+		exg	a5,a6
+		move.l	a5,a1
+		jsr	-414(a6)		| CloseLibrary
+		movem.l	(sp)+,d0/a0
+		jmp	(a2)
+ours1:		exg	a5,a6
+		move.l	a5,a1
+		jsr	-414(a6)		| CloseLibrary
+ours:		movem.l	(sp)+,d0/a0
 		movel	4:W,a6
 		movel	a6@(ThisTask:W),a3
 
@@ -214,7 +249,18 @@ oldpri: 	movel	a3@+,d0
 		jne	callfuncs
 		rts
 
+| FindSegment(a0, 0, TRUE) with a6 = DOSBase; Z clear when found
+sysseg:		move.l	a0,d1
+		moveq	#0,d2
+		moveq	#1,d3
+		jsr	-780(a6)
+		tst.l	d0
+		rts
+
 emptyline:	.ascii	"\n\0"
+dosname:	.asciz	"dos.library"
+cdname:		.asciz	"CD"
+bootname:	.asciz	"BootShell"
 		.even
 
 		.data

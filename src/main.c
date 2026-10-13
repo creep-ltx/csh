@@ -189,10 +189,12 @@ static int script_step(char *line, int size)
         return 1;
     }
     if (!(g = getline_(cli->cli_CurrentInput, line, size))) {
+        DBG(("cshell: end of input %lx (std %lx)\n", cli->cli_CurrentInput, cli->cli_StandardInput));
         if (cli->cli_CurrentInput != cli->cli_StandardInput) { script_end(); return 1; }
         return 0;                                          /* Ctrl-\ on the console */
     }
     if (g < 0) return 1;
+    DBG(("cshell: line [%s] cur %lx std %lx\n", line, cli->cli_CurrentInput, cli->cli_StandardInput));
     {   /* FindVar: the local list only, no copy, no ENV: file opened */
         struct LocalVar *e = FindVar("echo", LV_VAR);
         if (e && e->lv_Len >= 2 && (e->lv_Value[0] | 32) == 'o' && (e->lv_Value[1] | 32) == 'n')
@@ -208,6 +210,7 @@ static int script_step(char *line, int size)
         if (!FGets(cli->cli_CurrentInput, line + n, size - n - 1)) { line[n] = 0; break; }
     }
     run_line(line, 0);
+    DBG(("cshell: rc %ld r2 %ld fail %ld cur %lx\n", cli->cli_ReturnCode, cli->cli_Result2, cli->cli_FailLevel, cli->cli_CurrentInput));
     SetSignal(0, SIGBREAKF_CTRL_C);
     return 1;
 }

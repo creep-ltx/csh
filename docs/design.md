@@ -44,8 +44,9 @@ replacement.**
    user before removing them. **0.1b5 (2026-10-14)**: cshell, the user shell (see "csh as the user
    shell"); csh itself: run.c's FileInfoBlock freed at the end (260 bytes a run, measured), a pipe
    whose command after the first is missing starts nothing (a writer would wait for ever on 3.2's
-   PIPE:), and once a pipe's last stage is done the others get a Ctrl-C after a second. 0.1b5 is not
-   on the A1200.
+   PIPE:), and once a pipe's last stage is done the others get a Ctrl-C after a second. 0.1b5 installed
+   on the A1200 2026-10-14 (C:csh-0.1b4.bak kept; the user asked), the four leftover relay tasks
+   removed there with `wasabi kill --force` (the user agreed). cshell and the ROM: FS-UAE only.
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
 3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):
@@ -130,8 +131,8 @@ replacement.**
 
 The user asked (2026-10-13): could csh replace the built-in shell in a custom ROM, in the emulator, for
 fun? Three steps agreed: (1) csh as a real user shell, (2) tried with `Resident shell C:cshell REPLACE`,
-(3) a ROM image with the shell module swapped (Remus/Capitoline, or LoadModule). **Steps 1 and 2 are
-done in FS-UAE; step 3 is next.** Never on the A1200 unless the user asks.
+(3) a ROM image with the shell module swapped (Remus/Capitoline, or LoadModule). **All three done in
+FS-UAE (2026-10-14); see "csh in a ROM".** Never on the A1200 unless the user asks.
 
 - **`cshell`** is built from the same source (`make cshell`, `-DCSH_USERSHELL`): one binary, one code
   for every Shell window. **Pure** through `-resident32`: each start gets its own copy of the data
@@ -157,6 +158,31 @@ done in FS-UAE; step 3 is next.** Never on the A1200 unless the user asks.
 - Tested: `tests/shelltest.sh` (System() lines and rc, 10 System() shells leave no memory, a NewShell
   window with csh's language, exit closes it; the BootShell put back with `tests/probe/bootshell`).
   By hand: two cshell windows at once, pipes, `&` jobs, `Run`, EndShell.
+
+## csh in a ROM (2026-10-14, step 3: done in FS-UAE)
+
+`make cshell-ext.rom` (tools/mkextrom.py, src/rominit.S), `tests/romuae.sh start` boots the private
+FS-UAE with it, `tests/romtest.sh` checks it (8 checks, all green 2026-10-14). The 3.2 Kickstart file
+is not changed: cshell lives in a 256 KB second ROM.
+
+- **Where**: exec looks for modules in $F80000-$1000000 and $F00000-$F80000 (its range table, read
+  from 3.2's exec at $F80410). UAE's own boot ROM (for a drawer given as a hard drive) is at
+  $F00000-$F0FFFF; FS-UAE's `uae_kickstart_ext_rom_file2` maps a file from $F00000 with that first
+  64 KB under UAE's (its `..._address` option was refused), so the module starts 64 KB into the file:
+  RomTag "cshell" at $F10100, the code at $F101C4 (relocated there by mkextrom.py), the data hunk
+  after it (read-only: shellstart.S copies it to RAM for each Shell).
+- **How it becomes the shell**: the RomTag has RTF_AFTERDOS; its init (rominit.S) points dos's
+  "shell" entry at cshell's seglist, as `Resident shell ... REPLACE` would, before the Startup-Sequence.
+- **The boot stays the ROM Shell's**: 3.2 starts even the boot CLI through "shell", and only the ROM
+  Shell puts its internal commands (Run, CD, Echo...) into the resident list, when it first runs.
+  So cshell's start looks for "CD" first: not there means this is the boot Shell, and it jumps to
+  the ROM Shell's code (the BootShell entry) with the start-up packet still waiting. Two dead ends
+  first: a "shell" module of version 48 replacing the ROM's (the internal commands went with it) and
+  pointing BootShell at cshell (the same) - the boot stopped at its first line, `run`.
+- After the boot, every Shell is csh: NewShell and the Shell icon, Run, System() (wasabid's `run` too).
+- Seen with a debug build: FS-UAE's `serial_port` must name a file that exists (`: > file` first);
+  then KPrintF lands there from the first moment of the boot, before wasabid (romuae.sh: SERIAL=).
+- Stopping FS-UAE (systemctl stop) prints a segfault of fs-uae on the PC: after the tests, harmless.
 
 ## The idea
 
