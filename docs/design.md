@@ -7,6 +7,35 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
+**State at the end of 2026-10-13 (one long session built steps 0-7):** csh **0.1b3** is installed
+on the A1200 as C:csh, `ls` 0.1 as C:ls (the user's CUtils ls kept as C:ls-cutils.bak), CTerm
+**0.3b33** in Work:Utils/CTerm with `shell=csh` in CTerm.prefs: every new CTerm tab starts csh
+(0.3b31 kept as CTerm-0.3b31.bak / Parts-0.3b31.bak). All tests green (PC 57 + 119, 12 ROM
+pairs, 3 language scripts on the real ROM, FS-UAE and A1200).
+
+**The user's rule for csh (2026-10-13): the best of bash, zsh and fish; when in doubt ask how
+they handle it; fast (never slower than the ROM Shell, tests/bench.sh); in the end a full shell
+replacement.**
+
+**What csh still lacks** (the user asked; the list to work from, daily-use first):
+- bash language: arrays, `trap`, `[[ ]]`, `getopts`, `$RANDOM`, `readonly`, `printf %f`,
+  arithmetic assignments (`+=`, `++`), `?:`, `**`, history expansion (`!!`, `!$`), `cd -`,
+  `set -u`, `set -o pipefail`, `select`.
+- `( )` and `$( )` are not subshells (no fork on the Amiga: variables set inside stay).
+- `*` goes to programs as `#?` (they match): `echo *.txt` prints `#?.txt`; only csh's own `for`
+  matches files. Revisit with the user's rule (bash/zsh expand globs in the shell).
+- csh's own commands cannot run with `&`; a csh stage in the middle of a pipe writes a T: file
+  (not streaming); jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C.
+- The prompt knows only the ROM's escapes (%N %S %R); no right prompt, no git-like info.
+- Completion: no completion of a keyword's value (`TO`, `LFORMAT`), no fuzzy/menu selection.
+- Pipes are only level with the ROM's (0.99-1.01): a process per stage costs both the same.
+- Not loaded in parts (85 KB at once); not yet the user shell of every Shell window (only
+  CTerm tabs and typing `csh`).
+- `ls` calls every file with no ending and the e bit a program (a few data files show green);
+  Ahiru and Maki do not read ENVARC:FileColours yet.
+- Untested on the user's own scripts and daily use: the next session should ask what the user
+  ran into.
+
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`.
 2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
    `tests/probe`.
@@ -45,10 +74,15 @@ read or memory is not yet proven on the 3.2 ROM.*
 6. **Step 7 is done in CTerm 0.3b32**: `shell=` in CTerm.prefs (Settings, Files: "Then runs"),
    or `CTerm SHELL csh` for one run; the tab's Execute() string gets the shell as its next line,
    so the ROM Shell stays under csh.
-   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b2, C:ls 0.1 (the user's
+   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b3, C:ls 0.1 (the user's
    CUtils ls kept as C:ls-cutils.bak), CTerm 0.3b32 with its parts in Work:Utils/CTerm (0.3b31
    kept as CTerm-0.3b31.bak and Parts-0.3b31.bak), and `shell=csh` in ENVARC:/ENV:CTerm.prefs:
    every new CTerm tab starts csh.
+   **0.1b3 + CTerm 0.3b33:** keys typed while a command runs stay keys (CTerm's `CSI ?7727 h`,
+   set by csh in term_open, reset on exit), csh reads one key at a time (what follows the
+   Return stays for the command or the next prompt). `csh FROM`/`COMMAND` end the break relay
+   (a relay left behind waited in freed memory; four were found on the A1200 and removed with
+   `wasabi kill --force`).
    **Added 2026-10-13 evening:** `~` (HOME, else SYS:), `{a,b}` and `{1..5}`, `local` in
    functions, `S:CShell-Startup` (run once at the first prompt, the csh language), Tab
    completes a command's own keywords (read from its file: the longest run of ReadArgs parts,
