@@ -22,6 +22,7 @@ Start with [docs/design.md](docs/design.md), "Start here".
     tests/pairs.sh  ROM Shell and csh side by side in FS-UAE (W=probe/a: the A1200)
     tests/langtest.sh, tests/bench.sh   the language on the real ROM; the speed
 
-On the Amiga: `csh` in a Shell or CTerm tab; `exit` goes back to the ROM Shell.
+On the Amiga: `csh` in a Shell or CTerm tab; `exit` goes back to the ROM Shell. CTerm
+0.3b32 can start csh in every new tab (Settings, Files: "Then runs", or `CTerm SHELL csh`).
 `csh FROM script [args]` runs a script (`#!csh` on its first line: the csh language),
 `csh COMMAND "text"` runs csh text and ends.

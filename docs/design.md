@@ -1,6 +1,6 @@
 # CShell (csh): a modern shell for the Amiga
 
-*Design written 2026-10-12 with the user; steps 1-6 built 2026-10-13 (csh 0.1b1, ls 0.1). Everything here is proposed unless it
+*Design written 2026-10-12 with the user; steps 1-7 built 2026-10-13 (csh 0.1b1, ls 0.1, CTerm 0.3b32's shell setting). Everything here is proposed unless it
 says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
 AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
 read or memory is not yet proven on the 3.2 ROM.*
@@ -42,9 +42,13 @@ read or memory is not yet proven on the 3.2 ROM.*
    Amiga scripts 0.80-0.98; the same jobs in the csh language 0.14-0.99 (pipes 0.98 / 0.99, a
    loop with `[ ]` and `$(( ))` 0.14). `ls SYS:C` in a window 0.70 s against C:Dir 1.80 s
    (FS-UAE). Keep `tests/bench.sh` green after every change.
-6. **Next: step 7, csh as CTerm's tab command** (a CTerm setting), and the open items: Ahiru and
-   Maki reading `ENVARC:FileColours`; loading parts on demand (csh is 80 KB now; the language
-   could be a part); csh installed in C: on the A1200 (ask the user first).
+6. **Step 7 is done in CTerm 0.3b32** (built 2026-10-13, not installed): `shell=` in CTerm.prefs
+   (Settings, Files: "Then runs"), or `CTerm SHELL csh` for one run; the tab's Execute() string
+   gets the shell as its next line, so the ROM Shell stays under csh. **Next:** install csh
+   (C:csh) and ls (C:ls, replacing the user's CUtils ls) and CTerm 0.3b32 on the A1200 when the
+   user says so; Ahiru and Maki reading `ENVARC:FileColours`; loading parts on demand (csh is
+   80 KB; the language could be a part). Until installed, the A1200 has RAM:CT (CTerm 0.3b32
+   with its parts), RAM:csh and RAM:ls.
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
 ## Decided while building (2026-10-13)
@@ -308,8 +312,8 @@ completion tables can be in separate parts if the core grows past ~60 KB.
    / `case`, functions, `*`, here-documents, `$((...))`, `#!csh` scripts, `S:CShell-Startup`.
 5. **Pipes and jobs**.
 6. **`ls` and the family's colour file** (with Ahiru and Maki).
-7. **CTerm**: csh as the command a new tab starts (a setting). Later, maybe, csh as the user
-   shell for every Shell window.
+7. **CTerm**: csh as the command a new tab starts (a setting) - done, CTerm 0.3b32. Later,
+   maybe, csh as the user shell for every Shell window.
 
 Each step is a beta (`0.1b1`...) tried in FS-UAE, then on the A1200.
 
