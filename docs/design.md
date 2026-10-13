@@ -45,7 +45,7 @@ read or memory is not yet proven on the 3.2 ROM.*
 6. **Step 7 is done in CTerm 0.3b32**: `shell=` in CTerm.prefs (Settings, Files: "Then runs"),
    or `CTerm SHELL csh` for one run; the tab's Execute() string gets the shell as its next line,
    so the ROM Shell stays under csh.
-   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b1, C:ls 0.1 (the user's
+   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b2, C:ls 0.1 (the user's
    CUtils ls kept as C:ls-cutils.bak), CTerm 0.3b32 with its parts in Work:Utils/CTerm (0.3b31
    kept as CTerm-0.3b31.bak and Parts-0.3b31.bak), and `shell=csh` in ENVARC:/ENV:CTerm.prefs:
    every new CTerm tab starts csh.
