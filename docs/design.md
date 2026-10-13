@@ -42,13 +42,14 @@ read or memory is not yet proven on the 3.2 ROM.*
    Amiga scripts 0.80-0.98; the same jobs in the csh language 0.14-0.99 (pipes 0.98 / 0.99, a
    loop with `[ ]` and `$(( ))` 0.14). `ls SYS:C` in a window 0.70 s against C:Dir 1.80 s
    (FS-UAE). Keep `tests/bench.sh` green after every change.
-6. **Step 7 is done in CTerm 0.3b32** (built 2026-10-13, not installed): `shell=` in CTerm.prefs
-   (Settings, Files: "Then runs"), or `CTerm SHELL csh` for one run; the tab's Execute() string
-   gets the shell as its next line, so the ROM Shell stays under csh. **Next:** install csh
-   (C:csh) and ls (C:ls, replacing the user's CUtils ls) and CTerm 0.3b32 on the A1200 when the
-   user says so; Ahiru and Maki reading `ENVARC:FileColours`; loading parts on demand (csh is
-   80 KB; the language could be a part). Until installed, the A1200 has RAM:CT (CTerm 0.3b32
-   with its parts), RAM:csh and RAM:ls.
+6. **Step 7 is done in CTerm 0.3b32**: `shell=` in CTerm.prefs (Settings, Files: "Then runs"),
+   or `CTerm SHELL csh` for one run; the tab's Execute() string gets the shell as its next line,
+   so the ROM Shell stays under csh.
+   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b1, C:ls 0.1 (the user's
+   CUtils ls kept as C:ls-cutils.bak), CTerm 0.3b32 with its parts in Work:Utils/CTerm (0.3b31
+   kept as CTerm-0.3b31.bak and Parts-0.3b31.bak), and `shell=csh` in ENVARC:/ENV:CTerm.prefs:
+   every new CTerm tab starts csh. **Next:** Ahiru and Maki reading `ENVARC:FileColours`;
+   loading parts on demand (csh is 80 KB; the language could be a part); what the user finds.
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
 ## Decided while building (2026-10-13)
