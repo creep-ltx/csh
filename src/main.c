@@ -10,6 +10,7 @@
  *   csh            the prompt, on the console csh was started from
  *   csh FROM file  runs the file's lines, then ends (rc = the last one's)
  *   exit [rc]      back to the ROM Shell; EndCLI ends the whole Shell */
+#include <exec/memory.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <dos/rdargs.h>
@@ -18,6 +19,7 @@
 #include <string.h>
 #include "csh.h"
 #include "edit.h"
+#include "lang.h"
 
 static const char version[] = "$VER: csh " CSH_VERSION " (" CSH_DATE ")";
 
@@ -85,19 +87,31 @@ static void editor_start(void)
     if (keys_bad[0]) { FPuts(csh.out, keys_bad); FPutC(csh.out, '\n'); }
 }
 
-int main(void)
+static int smain(void)
 {
     static char line[LINE_MAX];
     struct CommandLineInterface *cli;
     struct RDArgs *rd;
-    LONG arg[1] = { 0 };
+    LONG arg[3] = { 0, 0, 0 };
     BPTR from = 0, oldcur;
     LONG oldinter, bg0;
 
     (void)version;
     csh.me = (struct Process *)FindTask(NULL);
     if (!(cli = csh.cli = Cli())) return 20;
-    if (!(rd = ReadArgs("FROM", arg, NULL))) { PrintFault(IoErr(), "csh"); return 20; }
+    if (!(rd = ReadArgs("FROM,ARGS/M,COMMAND/K", arg, NULL))) { PrintFault(IoErr(), "csh"); return 20; }
+    if (arg[2] || (arg[0] && lang_isscript((char *)arg[0]))) {
+        /* csh COMMAND "text", or csh FROM a #!csh script [args]: run, end */
+        LONG r;
+        char **args = (char **)arg[1];
+        int n = 0;
+        while (args && args[n]) n++;
+        csh.in = Input(); csh.out = Output(); csh.module = cli->cli_Module;
+        r = arg[2] ? lang_eval((char *)arg[2]) : lang_source((char *)arg[0], n, args);
+        os_flush();
+        FreeArgs(rd);
+        return r;
+    }
     if (arg[0] && !(from = Open((STRPTR)arg[0], MODE_OLDFILE))) {
         PrintFault(IoErr(), (STRPTR)arg[0]); FreeArgs(rd); return 20;
     }
@@ -134,23 +148,31 @@ int main(void)
                 if (buffered_line(cli->cli_StandardInput)) {
                     if (!FGets(cli->cli_StandardInput, line, sizeof line - 1)) break;
                     hist_add(line);
-                    run_line(line, 0);
+                    lang_line(line, 1);
+                    os_flush();
                     SetSignal(0, SIGBREAKF_CTRL_C);
                     continue;
                 }
                 /* opened first: it finds out whether this is CTerm, which the
                  * prompt's colours depend on */
                 if (!term_open(cli->cli_StandardInput, csh.out)) { editing = 0; continue; }
-                n = edit_line(prompt_text(1), line, sizeof line - 1);
+                n = edit_line(lang_more ? "> " : prompt_text(1), line, sizeof line - 1);
                 term_close();
+                if (n == -2) { lang_reset(); continue; }
                 if (n < 0) break;
                 hist_add(line);
-                run_line(line, 0);
+                lang_line(line, 1);
+                os_flush();
                 SetSignal(0, SIGBREAKF_CTRL_C);
                 continue;
             }
-            FPuts(csh.out, prompt_text(0));
+            FPuts(csh.out, lang_more ? "> " : prompt_text(0));
             Flush(csh.out);
+            if (!FGets(cli->cli_CurrentInput, line, sizeof line - 1)) break;
+            lang_line(line, 1);
+            os_flush();
+            SetSignal(0, SIGBREAKF_CTRL_C);
+            continue;
         }
         else if (SetSignal(0, SIGBREAKF_CTRL_D) & SIGBREAKF_CTRL_D) {
             Printf("***Break\n");
@@ -186,4 +208,29 @@ int main(void)
         cli->cli_Interactive = oldinter;
     }
     return csh.rc;
+}
+
+/* A stack of its own: csh runs on the Shell's (often 4 KB), and the csh
+ * language calls itself (functions, $(...)). Commands get their own stack
+ * from RunCommand as always. */
+#define STACKSZ 65536
+static struct StackSwapStruct sss;
+static int sret;
+
+static void __attribute__((noinline)) runswapped(void) { sret = smain(); }
+
+int main(void)
+{
+    struct Task *me = FindTask(NULL);
+    char *big;
+    if ((char *)me->tc_SPUpper - (char *)me->tc_SPLower >= STACKSZ || !(big = AllocVec(STACKSZ, MEMF_ANY)))
+        return smain();
+    sss.stk_Lower = big;
+    sss.stk_Upper = (ULONG)(big + STACKSZ);
+    sss.stk_Pointer = (APTR)(big + STACKSZ);
+    StackSwap(&sss);
+    runswapped();
+    StackSwap(&sss);
+    FreeVec(big);
+    return sret;
 }

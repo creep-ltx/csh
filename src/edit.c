@@ -477,10 +477,10 @@ int edit_line(const char *p, char *line, int size)
             if (comp_complete(buf, &len, &cur, sizeof buf - 1) && comp_listing()) fresh();
             break;
         case A_CLEAR: term_outs("\f"); fresh(); break;
-        case A_CANCEL:
+        case A_CANCEL:      /* the line (and an unfinished command) thrown away */
             suglen = 0; navigating = 1; cur = len; draw(); navigating = 0;
-            term_outs("\n"); len = cur = 0; buf[0] = 0; fresh();
-            break;
+            term_outs("\n"); term_flush();
+            return -2;
         case A_EOF:
             if (len) { delrange(cur, cur + 1, 0); break; }
             term_outs("\n"); term_flush();

@@ -30,6 +30,14 @@ extern struct csh csh;
 
 /* run.c */
 void run_line(const char *line, int depth);
+LONG run_cmd(struct cmdline *c, int depth);
+LONG run_internal(const char *name, const char *args, struct cmdline *redir);
+
+/* lang.c: the csh language */
+int lang_isscript(const char *path);              /* "#!csh" on its first line */
+LONG lang_runscript(const char *path, struct cmdline *c);
+int lang_line(const char *line, int interactive); /* a line typed at the prompt */
+extern int lang_more;                             /* lang_line wants another line */
 int run_capture(const char *cmd, char *buf, int size);
 void script_end(void);
 void set_rc(LONG rc, LONG r2);

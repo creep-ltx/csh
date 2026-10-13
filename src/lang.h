@@ -1,0 +1,71 @@
+/* lang.h - the csh language (docs/design.md "The csh language"): the
+ * common part of bash on Amiga terms. lang.c reads, parses and runs it;
+ * builtin.c has csh's own commands; everything that touches the Amiga
+ * goes through the os_ calls below (os.c on the Amiga, tests/fakeos.c on
+ * the PC, so the language is tested on the PC by the hundred). */
+#ifndef CSH_LANG_H
+#define CSH_LANG_H
+
+#include "line.h"
+
+#define SH_FALSE 1               /* what csh's own "false" returns (test, !, false) */
+
+/* ---- what lang.c needs from the system (os.c) ---- */
+void *os_alloc(long n);          /* cleared memory, or NULL */
+void os_free(void *p);
+int os_getvar(const char *name, char *buf, int size);      /* length, -1 = none */
+void os_setvar(const char *name, const char *val, int global);
+void os_unsetvar(const char *name);
+int os_getalias(const char *name, char *buf, int size);
+void os_setalias(const char *name, const char *val);
+long os_run(struct cmdline *c);  /* an Amiga command (searched, run); its rc */
+long os_rom(const char *line, int background);   /* a line handed to the ROM Shell */
+void os_write(const char *s, int n);             /* to the output of the moment */
+void os_flush(void);                             /* what os_write gathered, sent */
+int os_readline(char *buf, int size);            /* from the input of the moment; -1 = end */
+void *os_redir(struct cmdline *c);               /* open + select; NULL = failed (said) */
+void os_unredir(void *save);
+void *os_capture(void);                          /* $(...): the output to a file */
+int os_captured(void *save, char **text);        /* back; *text os_alloc'ed */
+int os_break(void);                              /* Ctrl-C since the last look */
+int os_test(const char *path, int op);           /* -e -f -d -r -w -x -s */
+int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u);
+void os_setrc(long rc);
+char *os_readfile(const char *path, long *len);  /* os_alloc'ed, 0-ended */
+int os_tempfile(const char *text, int n, char *name, int size);   /* here-documents */
+void os_delete(const char *name);
+int os_cd(const char *dir);                      /* 0 = failed */
+long os_number(void);                            /* $$: the CLI number */
+void os_quit(long rc);                           /* exit at the prompt: csh ends */
+int os_interactive(void);
+void os_history(void);
+
+/* ---- lang.c ---- */
+struct shfield { char *s; int len; char quoted, pattern; };
+
+int lang_parse_check(const char *text);   /* 1 complete, 0 needs more, -1 error (PC tests) */
+long lang_eval(const char *text);         /* runs text as csh (eval, -c, tests) */
+int lang_line(const char *line, int interactive);   /* a line typed: 0 = more lines wanted */
+void lang_reset(void);                    /* the unfinished command thrown away (Ctrl-C) */
+extern int lang_more;
+long lang_source(const char *path, int argc, char **argv);
+void sh_print(const char *s);
+void sh_printn(const char *s, int n);
+void sh_error(const char *a, const char *b);     /* "csh: a b" */
+long sh_rc(void);
+int sh_getpos(int i, char **s);                  /* positional parameter i (1..) */
+int sh_npos(void);
+void sh_setpos(int argc, char **argv);           /* set's / shift's own */
+extern int sh_opt_e, sh_opt_x;
+extern int sh_break, sh_continue, sh_return, sh_exiting;
+extern long sh_exitrc;
+extern int sh_loops;
+int gmatch(const char *pat, const char *s, int nocase);   /* sh pattern: * ? [...] */
+long arith(const char *expr, int *err);
+
+/* ---- builtin.c ---- */
+extern const char *const builtin_names[];
+int builtin_find(const char *name);              /* -1 = not one */
+long builtin_run(int which, int argc, char **argv);
+
+#endif

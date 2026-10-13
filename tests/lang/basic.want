@@ -1,0 +1,18 @@
+args: 2 [first] [second word]
+hello world no $x
+made it
+file RAM:cshdir/f1.txt
+file RAM:cshdir/f2.txt
+f1.txt
+n=3
+3 things
+read back: one
+found two
+rc after miss: 5
+starts with w
+pad-007
+42
+amigavar is 42
+gone
+here world
+done

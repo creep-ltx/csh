@@ -73,6 +73,6 @@ void comp_forget(void);             /* the command table is built again when nex
 int comp_listing(void);             /* a list was shown under the line */
 
 /* edit.c */
-int edit_line(const char *prompt, char *line, int size);   /* -1 = end (Ctrl-\) */
+int edit_line(const char *prompt, char *line, int size);   /* -1 = end (Ctrl-\), -2 = Ctrl-C */
 
 #endif

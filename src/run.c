@@ -192,11 +192,14 @@ static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir,
         set_rc(20, IoErr()); return -1;
     }
     if (stack < 4000) stack = 4000;
-    Flush(csh.out);
-    oldin = SelectInput(in ? in : csh.in);
-    oldout = SelectOutput(out ? out : csh.out);
+    /* the defaults are the streams of the moment: csh points them elsewhere
+     * for a redirected loop or block, or $(...) */
+    Flush(Output());
+    oldin = SelectInput(in ? in : Input());
+    oldout = SelectOutput(out ? out : Output());
     oldces = csh.me->pr_CES;
     if (err) csh.me->pr_CES = err;
+    else if (c->errtoout) csh.me->pr_CES = out ? out : Output();
     GetProgramName(oldname, sizeof oldname);
     SetProgramName((STRPTR)name);
     olddir = SetProgramDir(progdir);
@@ -222,7 +225,7 @@ static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir,
 }
 
 /* Runs a ROM internal command (CD, Execute...) with an argument line. */
-static LONG run_internal(const char *name, const char *args, struct cmdline *redir)
+LONG run_internal(const char *name, const char *args, struct cmdline *redir)
 {
     struct cmdline c;
     struct Segment *s = resident(name);
@@ -289,9 +292,6 @@ void script_end(void)
     cli->cli_FailLevel = 10;
 }
 
-/* csh's own commands (more come with the csh language) */
-const char *const builtin_names[] = { "exit", "history", NULL };
-
 static int builtin(struct cmdline *c)
 {
     if (!stricmp(c->cmd, "history")) {
@@ -309,40 +309,18 @@ static int builtin(struct cmdline *c)
     return 0;
 }
 
-void run_line(const char *line, int depth)
+/* Runs one command already split up (the ROM's rules or csh's language):
+ * the search, then RunCommand. Returns the rc (also in $RC). */
+LONG run_cmd(struct cmdline *c, int depth)
 {
-    static char a[LINE_MAX], b[LINE_MAX];
-    static struct cmdline cbuf;
     static struct FileInfoBlock *fib;
-    struct cmdline *c = &cbuf;
     struct Segment *seg = NULL;
     BPTR lock = 0, where;
-    const char *l = line, *lname;
-    int interactive = csh.cli->cli_CurrentInput == csh.cli->cli_StandardInput && !csh.fromfile;
+    const char *lname;
     int f, alone, det;
     LONG rc = 0;
 
-    if (depth > 4) { Printf("csh: too deep\n"); set_rc(20, 0); return; }
-    if (line_alias(l, a, sizeof a, getalias) > 0) l = a;
-    if (line_vars(l, b, sizeof b, getvar) < 0) { Printf("csh: line too long\n"); set_rc(10, 0); return; }
-    l = b;
-    if (strchr(l, '`')) {
-        if (line_backquotes(l, a, sizeof a, run_capture) < 0) {
-            Printf("csh: unmatched backquote\n"); set_rc(10, 0); return;
-        }
-        l = a;
-    }
-    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return;   /* kept for csh's life */
-    if (line_parse(l, c) <= 0) goto out;
-
-    if (c->pipe) {          /* for now the ROM Shell runs pipes (step 5: csh's own) */
-        Flush(csh.out);
-        rc = SystemTags((STRPTR)l, SYS_Input, csh.in, SYS_Output, csh.out, TAG_END);
-        set_rc(rc, IoErr());
-        goto checkfail;
-    }
-    if (builtin(c)) goto out;
-
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 20;   /* kept for csh's life */
     alone = c->args[0] == '\n' && !c->in[0] && !c->out[0];
     f = find(c->cmd, alone, &seg, &lock, fib, &where, &lname);
     if (f == F_RES) {
@@ -357,15 +335,20 @@ void run_line(const char *line, int depth)
         static char path[256], cmd[LINE_MAX];
         if (fib->fib_Protection & FIBF_SCRIPT) {
             char head[2] = { 0, 0 };
+            int ischsh;
             NameFromLock(lock, path, sizeof path);
-            BPTR fh = Open(path, MODE_OLDFILE);
-            if (fh) { Read(fh, head, 2); Close(fh); }
             UnLock(lock);
+            ischsh = lang_isscript(path);
+            if (ischsh) return lang_runscript(path, c);
+            {
+                BPTR fh = Open(path, MODE_OLDFILE);
+                if (fh) { Read(fh, head, 2); Close(fh); }
+            }
             if (head[0] == '/' && head[1] == '*') {
                 strcpy(cmd, "RX ");
                 quoted(cmd + 3, sizeof cmd - 3, path, c->args);
                 run_line(cmd, depth + 1);
-                goto out;
+                return csh.rc;
             }
             quoted(cmd, sizeof cmd, path, c->args);
             rc = run_internal("Execute", cmd, c);
@@ -397,13 +380,42 @@ void run_line(const char *line, int depth)
         set_rc(10, ERROR_OBJECT_NOT_FOUND);
         rc = 10;
     }
-checkfail:
+    return rc;
+}
+
+/* A line by the ROM Shell's rules (Amiga scripts): alias, $vars, backquotes,
+ * split, run; FailAt ends the script. */
+void run_line(const char *line, int depth)
+{
+    static char a[LINE_MAX], b[LINE_MAX];
+    static struct cmdline cbuf;
+    struct cmdline *c = &cbuf;
+    const char *l = line;
+    int interactive = csh.cli->cli_CurrentInput == csh.cli->cli_StandardInput && !csh.fromfile;
+    LONG rc = 0;
+
+    if (depth > 4) { Printf("csh: too deep\n"); set_rc(20, 0); return; }
+    if (line_alias(l, a, sizeof a, getalias) > 0) l = a;
+    if (line_vars(l, b, sizeof b, getvar) < 0) { Printf("csh: line too long\n"); set_rc(10, 0); return; }
+    l = b;
+    if (strchr(l, '`')) {
+        if (line_backquotes(l, a, sizeof a, run_capture) < 0) {
+            Printf("csh: unmatched backquote\n"); set_rc(10, 0); return;
+        }
+        l = a;
+    }
+    if (line_parse(l, c) <= 0) return;
+
+    if (c->pipe) {          /* for now the ROM Shell runs pipes (step 5: csh's own) */
+        Flush(Output());
+        rc = SystemTags((STRPTR)l, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
+        set_rc(rc, IoErr());
+    } else if (builtin(c)) return;
+    else rc = run_cmd(c, depth);
     /* a script ends when a command fails at or over FailAt */
     if (!interactive && rc >= csh.cli->cli_FailLevel && !csh.quit) {
         Printf("%s failed returncode %ld\n", c->cmd, (long)rc);
         script_end();
         if (csh.fromfile) csh.quit = 1;
     }
-out:
-    return;
 }

@@ -17,6 +17,7 @@ struct cmdline {
     int arglen;               /* strlen(args), the "\n" counted */
     char in[256], out[256], err[256];   /* redirection files, "" = none */
     int out_append, err_append, inout;  /* >>, *>>, <> (in and out one file) */
+    int errtoout;             /* 2>&1, &>: the error stream goes where the output goes */
     int pipe;                 /* an unquoted "|" word: a pipe */
 };
 
