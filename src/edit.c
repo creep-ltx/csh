@@ -124,7 +124,7 @@ static int isassign(const char *w, int n)
  * the closing colour reset: *endcol is the colour it ends in. */
 static int render(char *out, int *endcol)
 {
-    int i = 0, cmdplace = 1;
+    int i = 0, cmdplace = 1, forname = 0;   /* forname: counts down from for/case to its "in" */
     ro = out; rn = 0; curcol = -1;
     while (i < len) {
         char c = buf[i];
@@ -157,7 +157,13 @@ static int render(char *out, int *endcol)
                 e++;
             }
             if (cmdplace) {
-                if (iskw(buf + i, e - i)) { colour(C_BUILTIN); rput(buf + i, e - i); i = e; continue; }
+                if (iskw(buf + i, e - i)) {
+                    /* for NAME, case WORD, function NAME: a name next, not a command */
+                    int n = e - i;
+                    if ((n == 3 && !memcmp(buf + i, "for", 3)) || (n == 4 && !memcmp(buf + i, "case", 4)) ||
+                        (n == 8 && !memcmp(buf + i, "function", 8))) { cmdplace = 0; forname = n != 8 ? 3 : 0; }
+                    colour(C_BUILTIN); rput(buf + i, e - i); i = e; continue;
+                }
                 if (isassign(buf + i, e - i)) {
                     for (k = i; buf[k] != '='; k++) ;
                     colour(C_VAR); rput(buf + i, k - i + 1); i = k + 1;
@@ -175,7 +181,9 @@ static int render(char *out, int *endcol)
                     continue;
                 }
             }
-            /* an argument: strings, variables, options */
+            /* an argument: strings, variables, options; for's and case's "in" a keyword */
+            if (forname) forname--;
+            if (forname == 1 && e - i == 2 && !memcmp(buf + i, "in", 2) && i == s) { forname = 0; colour(C_BUILTIN); rput(buf + i, 2); i = e; continue; }
             if (buf[i] == '-' && e - i > 1 && i == s) { colour(C_OPTION); rput(buf + i, e - i); i = e; continue; }
             q = 0;
             while (i < e) {
