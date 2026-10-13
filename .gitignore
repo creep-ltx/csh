@@ -12,3 +12,6 @@ build-shell/
 tests/probe/sigs
 tests/probe/bootshell
 /cshell-ext.rom
+tests/probe/findres
+tests/probe/peek
+tests/probe/segs
