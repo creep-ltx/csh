@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# a - wasabi to the real A1200 (shared: check wasabi ps first)
+exec wasabi "$@"

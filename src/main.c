@@ -138,6 +138,8 @@ int main(void)
                     SetSignal(0, SIGBREAKF_CTRL_C);
                     continue;
                 }
+                /* opened first: it finds out whether this is CTerm, which the
+                 * prompt's colours depend on */
                 if (!term_open(cli->cli_StandardInput, csh.out)) { editing = 0; continue; }
                 n = edit_line(prompt_text(1), line, sizeof line - 1);
                 term_close();

@@ -80,7 +80,7 @@ void term_move(int n, char f)
 
 /* ---- input ----------------------------------------------------------- */
 
-#define KQ 32
+#define KQ 1024                 /* keys waiting: a fast typist or wasabi can send hundreds at once */
 static int kq[KQ], kh, kt;
 static UBYTE ibuf[256];
 static int ilen;
@@ -263,10 +263,12 @@ static void parse(int final)
     if (i > 0) { memmove(ibuf, ibuf + i, ilen - i); ilen -= i; }
 }
 
+static int qroom(void) { return (kh - kt - 1 + KQ) % KQ; }
+
 static void readnow(void)
 {
     int guard = 16;
-    while (guard-- && WaitForChar(tin, 0)) {
+    while (guard-- && qroom() > (int)sizeof ibuf && WaitForChar(tin, 0)) {
         LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
         if (n <= 0) break;
         ilen += n;

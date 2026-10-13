@@ -3,7 +3,7 @@
  *   history 500     lines kept
  *   suggest on      the grey suggestion from the history
  *   colour on       the line coloured as it is typed
- *   command 32,33   a colour: SGR numbers in CTerm, then in a plain Shell
+ *   command 92,33   a colour: SGR numbers in CTerm, then in a plain Shell
  *                   window (its pens: 4 colours on a stock Workbench);
  *                   "-" = none. The program picks the kind, CTerm's
  *                   theme decides the shade. */
@@ -31,18 +31,20 @@ static const char defaults[] =
     "suggest on\n"
     "colour on\n"
     "; colours: SGR numbers in CTerm, then in a plain Shell window (its pens);\n"
-    "; '-' = none. 31 red 32 green 33 yellow 34 blue 35 magenta 36 cyan 90 grey,\n"
-    "; 1 bold 3 italic 4 underline, joined with ';' (1;32).\n"
-    "command 32,33\n"
-    "unknown 31,3\n"
-    "builtin 36,33\n"
-    "string 33,-\n"
-    "variable 35,-\n"
+    "; '-' = none. In a Shell tab CTerm takes 30-37 as the Amiga's pens, as a\n"
+    "; plain window does: the theme's colours are 90 grey 91 red 92 green\n"
+    "; 93 yellow 94 blue 95 magenta 96 cyan 97 white; 1 bold 3 italic 4 underline,\n"
+    "; joined with ';' (1;92).\n"
+    "command 92,33\n"
+    "unknown 91,3\n"
+    "builtin 96,33\n"
+    "string 93,-\n"
+    "variable 95,-\n"
     "option -,-\n"
     "comment 90,32\n"
     "redirection 1,1\n"
     "suggestion 90,32\n"
-    "promptrc 31,1\n";
+    "promptrc 91,1\n";
 
 extern char *readall(const char *path, long max);
 extern void writeall(const char *dir, const char *path, const char *text, long n);

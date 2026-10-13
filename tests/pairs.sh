@@ -2,7 +2,7 @@
 # pairs.sh [NAME...] - each tests/pairs/NAME.txt run by the 3.2 ROM Shell
 # (Execute) and by csh (csh FROM), outputs and return codes compared. Runs
 # against the private FS-UAE of CTerm/tests/files/uae.sh (port 1240).
-cd "$(dirname "$0")"; W=probe/w; P=pairs
+cd "$(dirname "$0")"; W=${W:-probe/w}; P=pairs
 $W put ../csh RAM:csh >/dev/null || exit 2
 for f in probe/rcx probe/pcat probe/perr $P/inner.key probe/s/sbit probe/s/ebit probe/s/rexx pairs/noe; do $W put $f RAM:$(basename $f) >/dev/null; done
 $W run --max-time 5 "Protect RAM:sbit +s" >/dev/null; $W run --max-time 5 "Protect RAM:rexx +s" >/dev/null

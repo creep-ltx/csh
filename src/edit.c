@@ -37,7 +37,7 @@ static char last[LINE_MAX * 2];  /* what was drawn: the line's string, escapes a
 static int lastn, lastvalid, lastsug;
 static char sug[LINE_MAX];       /* the suggestion's rest */
 static int suglen;
-static int hidx, origlen, navigating;
+static int hidx, origlen, navigating, judged;
 static char *pending;            /* the rest of a pasted text, one line a prompt */
 
 static int vislen(const char *s)
@@ -144,7 +144,7 @@ static int render(char *out, int *endcol)
                 } else {
                     kind = comp_kind(buf + i, e - i);
                     /* the word being typed is not judged yet unless it is known */
-                    if (kind == W_UNKNOWN && e == len && cur == len) kind = W_NONE;
+                    if (kind == W_UNKNOWN && e == len && cur == len && !judged) kind = W_NONE;
                     colour(kind == W_COMMAND ? C_COMMAND : kind == W_BUILTIN ? C_BUILTIN : kind == W_UNKNOWN ? C_UNKNOWN : -1);
                     rput(buf + i, e - i);
                     i = e;
@@ -378,10 +378,10 @@ static int search(void)
 static void finish(void)
 {
     /* the suggestion taken off, the cursor below the line */
-    suglen = 0; navigating = 1;
+    suglen = 0; navigating = 1; judged = 1;
     cur = len;
     draw();
-    navigating = 0;
+    navigating = 0; judged = 0;
     term_outs("\n");
     term_flush();
 }

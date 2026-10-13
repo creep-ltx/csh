@@ -3,7 +3,7 @@
 # (Execute) and by csh (csh FROM), timed on the PC around wasabi (the
 # same overhead for both; the scripts are long so it hardly counts).
 # Each is run 3 times, the best kept. FS-UAE of CTerm/tests/files/uae.sh.
-cd "$(dirname "$0")"; W=probe/w
+cd "$(dirname "$0")"; W=${W:-probe/w}
 $W put ../csh RAM:csh >/dev/null; $W put probe/rcx RAM:rcx >/dev/null
 names=("$@"); [ ${#names[@]} = 0 ] && names=(internal loadseg cpath vars loop)
 best() { local b=999999 t s e; for i in 1 2 3; do s=$(date +%s%N); $W run --max-time 120 "$1" >/dev/null 2>&1; e=$(date +%s%N); t=$(( (e-s)/1000000 )); [ $t -lt $b ] && b=$t; done; echo $b; }
