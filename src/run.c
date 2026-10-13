@@ -36,34 +36,72 @@ static int noname(const char *s)
     return strchr(s, ':') == NULL && strchr(s, '/') == NULL;
 }
 
+/* A number as text, into b (at least 12 bytes); returns its length. */
+int ltoa10(LONG n, char *b)
+{
+    char t[12];
+    int i = 0, o = 0;
+    ULONG u = n < 0 ? -(ULONG)n : (ULONG)n;
+    if (n < 0) b[o++] = '-';
+    do { t[i++] = '0' + u % 10; u /= 10; } while (u);
+    while (i) b[o++] = t[--i];
+    b[o] = 0;
+    return o;
+}
+
+/* $RC and $Result2 are only rewritten when they change: SetVar frees and
+ * allocates each time, and most commands return 0 after a 0. */
 void set_rc(LONG rc, LONG r2)
 {
-    char b[16];
+    static LONG lastrc = -12345, lastr2 = -12345;
+    char b[12];
     if (rc == 0) r2 = 0;
     csh.cli->cli_ReturnCode = rc;
     csh.cli->cli_Result2 = r2;
     csh.rc = rc;
-    sprintf(b, "%ld", (long)rc);
-    SetVar("RC", b, -1, LV_VAR | GVF_LOCAL_ONLY);
-    sprintf(b, "%ld", (long)r2);
-    SetVar("Result2", b, -1, LV_VAR | GVF_LOCAL_ONLY);
+    if (rc != lastrc || !FindVar("RC", LV_VAR)) {
+        ltoa10(rc, b); SetVar("RC", b, -1, LV_VAR | GVF_LOCAL_ONLY); lastrc = rc;
+    }
+    if (r2 != lastr2 || !FindVar("Result2", LV_VAR)) {
+        ltoa10(r2, b); SetVar("Result2", b, -1, LV_VAR | GVF_LOCAL_ONLY); lastr2 = r2;
+    }
 }
 
 /* The resident list: a normal entry (seg_UC >= 0, use count raised) or an
  * internal command (CMD_INTERNAL). Disabled and system entries are skipped. */
+static int bstreq(const UBYTE *b, const char *s, int n)
+{
+    int i;
+    if (b[0] != n) return 0;
+    for (i = 0; i < n; i++) {
+        UBYTE x = b[i + 1], y = s[i];
+        if (x != y) {
+            if (x >= 'A' && x <= 'Z') x += 32; else if (x >= 0xC0 && x <= 0xDE && x != 0xD7) x += 32;
+            if (y >= 'A' && y <= 'Z') y += 32; else if (y >= 0xC0 && y <= 0xDE && y != 0xD7) y += 32;
+            if (x != y) return 0;
+        }
+    }
+    return 1;
+}
+
+/* One walk over the resident list (its header is at DosInfo+$10, not where
+ * the NDK says): a normal entry wins over an internal one of the same name,
+ * as FindSegment(name, 0, FALSE) first would. */
 static struct Segment *resident(const char *name)
 {
-    struct Segment *s;
+    struct DosInfo *di = BADDR(((struct RootNode *)DOSBase->dl_Root)->rn_Info);
+    struct Segment *s, *internal = NULL, *normal = NULL;
+    int n = strlen(name);
+    if (n > 255) return NULL;
     Forbid();
-    if ((s = FindSegment((STRPTR)name, NULL, FALSE)) && s->seg_UC >= 0) {
-        s->seg_UC++;
-    } else {
-        s = NULL;
-        while ((s = FindSegment((STRPTR)name, s, TRUE)))
-            if (s->seg_UC == CMD_INTERNAL) break;
+    for (s = BADDR(*(BPTR *)((UBYTE *)di + 0x10)); s; s = BADDR(s->seg_Next)) {
+        if (!bstreq(s->seg_Name, name, n)) continue;
+        if (s->seg_UC >= 0) { normal = s; break; }
+        if (s->seg_UC == CMD_INTERNAL && !internal) internal = s;
     }
+    if (normal) normal->seg_UC++;
     Permit();
-    return s;
+    return normal ? normal : internal;
 }
 
 static void resident_done(struct Segment *s)
@@ -86,15 +124,18 @@ static int isdir(BPTR l, struct FileInfoBlock *fib)
 }
 
 /* Finds a command. F_RES: *seg is the resident entry; F_FILE / F_DIR:
- * *lock is the file or drawer. Requesters stay off while looking. */
+ * *lock is the file or drawer, fib holds its Examine, and the file loads
+ * as *lname from the drawer *where (0: the current dir) - no full path
+ * name is made, that walks every parent drawer. Requesters stay off. */
 static int find(const char *name, int alone, struct Segment **seg, BPTR *lock,
-                struct FileInfoBlock *fib)
+                struct FileInfoBlock *fib, BPTR *where, const char **lname)
 {
+    static char cname[260];
     APTR win = csh.me->pr_WindowPtr;
     struct pathnode *pn;
-    char cname[260];
     BPTR l;
     int r = F_NONE;
+    *where = 0; *lname = name;
     if (noname(name) && (*seg = resident(name))) return F_RES;
     csh.me->pr_WindowPtr = (APTR)-1;
     if ((l = Lock((STRPTR)name, SHARED_LOCK))) {
@@ -105,14 +146,14 @@ static int find(const char *name, int alone, struct Segment **seg, BPTR *lock,
     if (!noname(name)) goto done;
     for (pn = BADDR(csh.cli->cli_CommandDir); pn; pn = BADDR(pn->next)) {
         if ((l = lockin(pn->lock, name))) {
-            if (!isdir(l, fib)) { *lock = l; r = F_FILE; goto done; }
+            if (!isdir(l, fib)) { *lock = l; *where = pn->lock; r = F_FILE; goto done; }
             UnLock(l);
         }
     }
     strcpy(cname, "C:");
     strncat(cname, name, sizeof cname - 3);
     if ((l = Lock(cname, SHARED_LOCK))) {
-        if (!isdir(l, fib)) { *lock = l; r = F_FILE; goto done; }
+        if (!isdir(l, fib)) { *lock = l; *lname = cname; r = F_FILE; goto done; }
         UnLock(l);
     }
 done:
@@ -204,7 +245,7 @@ static void quoted(char *dst, int size, const char *path, const char *args)
     int n = strlen(args);
     while (n && args[n - 1] == '\n') n--;
     if ((int)strlen(path) + n + 5 > size) { dst[0] = 0; return; }
-    sprintf(dst, "\"%s\"", path);
+    dst[0] = '"'; strcpy(dst + 1, path); strcat(dst, "\"");
     if (n) { strcat(dst, " "); strncat(dst, args, n); }
 }
 
@@ -213,7 +254,8 @@ int run_capture(const char *cmd, char *buf, int size)
     char tmp[40];
     BPTR fh, nil;
     LONG n = -1;
-    sprintf(tmp, "T:csh-bq-%ld", (long)csh.me->pr_TaskNum);
+    strcpy(tmp, "T:csh-bq-");
+    ltoa10(csh.me->pr_TaskNum, tmp + 9);
     if (!(fh = Open(tmp, MODE_NEWFILE))) return -1;
     nil = Open("NIL:", MODE_OLDFILE);
     SystemTags((STRPTR)cmd, SYS_Input, nil, SYS_Output, fh, TAG_END);
@@ -261,11 +303,12 @@ static int builtin(struct cmdline *c)
 void run_line(const char *line, int depth)
 {
     static char a[LINE_MAX], b[LINE_MAX];
-    struct FileInfoBlock *fib;
-    struct cmdline *c;
+    static struct cmdline cbuf;
+    static struct FileInfoBlock *fib;
+    struct cmdline *c = &cbuf;
     struct Segment *seg = NULL;
-    BPTR lock = 0;
-    const char *l = line;
+    BPTR lock = 0, where;
+    const char *l = line, *lname;
     int interactive = csh.cli->cli_CurrentInput == csh.cli->cli_StandardInput && !csh.fromfile;
     int f, alone, det;
     LONG rc = 0;
@@ -280,8 +323,7 @@ void run_line(const char *line, int depth)
         }
         l = a;
     }
-    if (!(c = AllocVec(sizeof *c, MEMF_ANY))) return;
-    if (!(fib = AllocDosObject(DOS_FIB, NULL))) { FreeVec(c); return; }
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return;   /* kept for csh's life */
     if (line_parse(l, c) <= 0) goto out;
 
     if (c->pipe) {          /* for now the ROM Shell runs pipes (step 5: csh's own) */
@@ -293,7 +335,7 @@ void run_line(const char *line, int depth)
     if (builtin(c)) goto out;
 
     alone = c->args[0] == '\n' && !c->in[0] && !c->out[0];
-    f = find(c->cmd, alone, &seg, &lock, fib);
+    f = find(c->cmd, alone, &seg, &lock, fib, &where, &lname);
     if (f == F_RES) {
         rc = run_seg(seg->seg_Seg, c->cmd, c, 0, &det);
         resident_done(seg);
@@ -304,10 +346,9 @@ void run_line(const char *line, int depth)
         rc = run_internal("CD", path, NULL);
     } else if (f == F_FILE) {
         static char path[256], cmd[LINE_MAX];
-        Examine(lock, fib);
-        NameFromLock(lock, path, sizeof path);
         if (fib->fib_Protection & FIBF_SCRIPT) {
             char head[2] = { 0, 0 };
+            NameFromLock(lock, path, sizeof path);
             BPTR fh = Open(path, MODE_OLDFILE);
             if (fh) { Read(fh, head, 2); Close(fh); }
             UnLock(lock);
@@ -321,7 +362,12 @@ void run_line(const char *line, int depth)
             rc = run_internal("Execute", cmd, c);
         } else {
             /* e cleared, or not a program: "file is not executable" as the ROM says */
-            BPTR s = fib->fib_Protection & FIBF_EXECUTE ? 0 : LoadSeg(path), dir;
+            BPTR s = 0, dir;
+            if (!(fib->fib_Protection & FIBF_EXECUTE)) {
+                BPTR old = where ? CurrentDir(where) : 0;
+                s = LoadSeg((STRPTR)lname);
+                if (where) CurrentDir(old);
+            }
             if (!s) {
                 LONG e = fib->fib_Protection & FIBF_EXECUTE ? ERROR_FILE_NOT_OBJECT : IoErr();
                 if (e == ERROR_OBJECT_WRONG_TYPE) e = ERROR_FILE_NOT_OBJECT;
@@ -350,6 +396,5 @@ checkfail:
         if (csh.fromfile) csh.quit = 1;
     }
 out:
-    FreeDosObject(DOS_FIB, fib);
-    FreeVec(c);
+    return;
 }

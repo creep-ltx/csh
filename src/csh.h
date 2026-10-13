@@ -33,5 +33,6 @@ void run_line(const char *line, int depth);
 int run_capture(const char *cmd, char *buf, int size);
 void script_end(void);
 void set_rc(LONG rc, LONG r2);
+int ltoa10(LONG n, char *b);
 
 #endif

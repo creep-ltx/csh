@@ -1,0 +1,7 @@
+Set n 0
+Lab top
+Set n `Eval $n + 1`
+If NOT $n GE 60 VAL
+  Skip top BACK
+EndIf
+Echo "n=$n"

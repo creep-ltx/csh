@@ -13,6 +13,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <dos/rdargs.h>
+#include <dos/var.h>
 #include <stdio.h>
 #include <string.h>
 #include "csh.h"
@@ -93,8 +94,10 @@ int main(void)
             break;                                         /* Ctrl-\ on the console */
         }
         if (!inter) {
-            char e[8];
-            if (GetVar("echo", e, sizeof e, 0) > 0 && !stricmp(e, "on")) FPuts(csh.out, line);
+            /* FindVar: the local list only, no copy, no ENV: file opened */
+            struct LocalVar *e = FindVar("echo", LV_VAR);
+            if (e && e->lv_Len >= 2 && (e->lv_Value[0] | 32) == 'o' && (e->lv_Value[1] | 32) == 'n')
+                FPuts(csh.out, line);
         }
         /* "+" at the end joins the next line, with the LF kept (line.c) */
         for (;;) {
