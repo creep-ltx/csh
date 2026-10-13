@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "csh.h"
+#include "edit.h"
 
 struct pathnode { BPTR next; BPTR lock; };   /* cli_CommandDir's list */
 
@@ -288,8 +289,16 @@ void script_end(void)
     cli->cli_FailLevel = 10;
 }
 
+/* csh's own commands (more come with the csh language) */
+const char *const builtin_names[] = { "exit", "history", NULL };
+
 static int builtin(struct cmdline *c)
 {
+    if (!stricmp(c->cmd, "history")) {
+        hist_print(csh.out);
+        set_rc(0, 0);
+        return 1;
+    }
     if (!stricmp(c->cmd, "exit")) {
         LONG n = 0;
         if (StrToLong(c->args, &n) < 0) n = csh.rc;

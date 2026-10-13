@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "csh.h"
+#include "edit.h"
 
 static const char version[] = "$VER: csh " CSH_VERSION " (" CSH_DATE ")";
 
@@ -24,29 +25,64 @@ struct csh csh;
 
 /* The prompt from cli_Prompt (set by the ROM's Prompt command): %N the CLI
  * number, %S or %s the current dir, %R the last return code, %% a percent
- * sign; other escapes print nothing (as the 3.2 ROM Shell does). */
-static void prompt(void)
+ * sign; other escapes print nothing (as the 3.2 ROM Shell does). With the
+ * ROM's own default ("%N.%S> ") csh adds a failed return code before the
+ * '>', in the promptrc colour of csh.prefs. */
+static const char *prompt_text(int colours)
 {
+    static char out[600];
     UBYTE *bp = BADDR(csh.cli->cli_Prompt);
-    char p[256], out[600], dir[256];
-    int n = bp ? bp[0] : 0, i, o = 0;
+    char p[256], dir[256];
+    int n = bp ? bp[0] : 0, i, o = 0, isdefault;
     if (n == 0) { strcpy(p, "%N.%S> "); n = 7; }
     else { memcpy(p, bp + 1, n); p[n] = 0; }
-    for (i = 0; i < n && o < (int)sizeof out - 260; i++) {
-        if (p[i] != '%' || i + 1 >= n) { out[o++] = p[i]; continue; }
+    isdefault = !strcmp(p, "%N.%S> ");
+    for (i = 0; i < n && o < (int)sizeof out - 300; i++) {
+        if (p[i] != '%' || i + 1 >= n) {
+            if (isdefault && p[i] == '>' && csh.cli->cli_ReturnCode) {
+                const char *c = colours ? prefs_sgr(C_PROMPTRC) : "";
+                out[o++] = ' ';
+                strcpy(out + o, c); o += strlen(c);
+                o += ltoa10(csh.cli->cli_ReturnCode, out + o);
+                if (*c) { strcpy(out + o, "\x1b[0m"); o += 4; }
+            }
+            out[o++] = p[i];
+            continue;
+        }
         switch (p[++i]) {
-        case 'N': case 'n':
-            o += sprintf(out + o, "%ld", (long)csh.me->pr_TaskNum); break;
+        case 'N': case 'n': o += ltoa10(csh.me->pr_TaskNum, out + o); break;
         case 'S': case 's':
             if (!GetCurrentDirName(dir, sizeof dir)) dir[0] = 0;
             strcpy(out + o, dir); o += strlen(dir); break;
-        case 'R': case 'r':
-            o += sprintf(out + o, "%ld", (long)csh.cli->cli_ReturnCode); break;
+        case 'R': case 'r': o += ltoa10(csh.cli->cli_ReturnCode, out + o); break;
         case '%': out[o++] = '%'; break;
         default: break;
         }
     }
-    Write(csh.out, out, o);
+    out[o] = 0;
+    return out;
+}
+
+/* A whole line in the handle's DOS buffer (fh_Pos..fh_End)? */
+static int buffered_line(BPTR f)
+{
+    struct FileHandle *fh = BADDR(f);
+    UBYTE *b;
+    LONG i;
+    if (!fh || !fh->fh_Buf || fh->fh_Pos < 0 || fh->fh_Pos >= fh->fh_End) return 0;
+    b = BADDR(fh->fh_Buf);
+    for (i = fh->fh_Pos; i < fh->fh_End; i++) if (b[i] == '\n') return 1;
+    return 0;
+}
+
+static int editing = -1;     /* csh edits the line itself (an interactive console) */
+
+static void editor_start(void)
+{
+    keys_load();
+    prefs_load();
+    hist_load();
+    if (keys_bad[0]) { FPuts(csh.out, keys_bad); FPutC(csh.out, '\n'); }
 }
 
 int main(void)
@@ -83,7 +119,37 @@ int main(void)
         if (cli->cli_Background && !bg0) break;           /* EndCLI / EndShell */
         if (csh.fromfile && cli->cli_CurrentInput == cli->cli_StandardInput) break;
         cli->cli_Interactive = inter ? DOSTRUE : DOSFALSE;
-        if (inter) prompt();
+        if (inter) {
+            if (editing < 0) {
+                editing = term_possible(cli->cli_StandardInput, csh.out);
+                if (editing) editor_start();
+            }
+            if (editing) {
+                int n;
+                SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+                /* lines typed ahead may already sit in the handle's buffer (the
+                 * ROM Shell's FGets took them with its own line): raw reads go
+                 * around it, so they are run from there. The rest typed ahead
+                 * comes through raw mode as keys. */
+                if (buffered_line(cli->cli_StandardInput)) {
+                    if (!FGets(cli->cli_StandardInput, line, sizeof line - 1)) break;
+                    hist_add(line);
+                    run_line(line, 0);
+                    SetSignal(0, SIGBREAKF_CTRL_C);
+                    continue;
+                }
+                if (!term_open(cli->cli_StandardInput, csh.out)) { editing = 0; continue; }
+                n = edit_line(prompt_text(1), line, sizeof line - 1);
+                term_close();
+                if (n < 0) break;
+                hist_add(line);
+                run_line(line, 0);
+                SetSignal(0, SIGBREAKF_CTRL_C);
+                continue;
+            }
+            FPuts(csh.out, prompt_text(0));
+            Flush(csh.out);
+        }
         else if (SetSignal(0, SIGBREAKF_CTRL_D) & SIGBREAKF_CTRL_D) {
             Printf("***Break\n");
             script_end();
@@ -111,6 +177,7 @@ int main(void)
         SetSignal(0, SIGBREAKF_CTRL_C);
     }
 
+    if (editing > 0) { hist_save(); term_cleanup(); }
     if (!(cli->cli_Background && !bg0)) {
         if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();
         cli->cli_CurrentInput = oldcur;
