@@ -901,6 +901,9 @@ long builtin_run(int which, int argc, char **argv)
         int i;
         long r = 0;
         if (argc < 2) return job_kill(NULL);
+        /* %n are csh's own jobs; a Shell's number, a name or a -flag go to
+         * the Amiga command kill (CUtils: by CLI number, 0x address, name) */
+        for (i = 1; i < argc; i++) if (argv[i][0] != '%') return NOTMINE;
         for (i = 1; i < argc; i++) if (job_kill(argv[i])) r = 10;
         return r;
     }
