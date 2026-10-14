@@ -10,7 +10,26 @@ changed.
 The ROM Shell stays where it is: it boots the Amiga and runs commands for other
 programs.
 
-**State: 0.1b1 (2026-10-13)** - runs commands and Amiga scripts exactly as the ROM Shell
+## Make csh the Shell of every window
+
+`make cshell` builds `cshell`: csh as the system's own Shell. Copy it to the Amiga, then
+in a Shell:
+
+    Protect RAM:cshell +p
+    Resident shell RAM:cshell REPLACE
+
+From then on every new Shell is csh: NewShell, the Shell icon, `Run`, and the commands
+other programs start (wasabi's `run` too). The boot is not touched. Until the next reboot.
+
+**Back to the ROM Shell:** reboot, or run `bootshell` (`tests/probe/bootshell.c`).
+
+**Tried in FS-UAE only** (`tests/shelltest.sh`). Not on the A1200 unless you decide so.
+
+**From ROM instead** (FS-UAE): `make cshell-ext.rom`, then `tests/romuae.sh start` boots the
+emulator with csh as the Shell from a second ROM; the Kickstart file is not changed
+(`tests/romtest.sh` checks it). How it works: docs/design.md, "csh in a ROM".
+
+**State: 0.1b5 (2026-10-14)** - runs commands and Amiga scripts exactly as the ROM Shell
 does; its own prompt (colours as you type, suggestions from history, Ctrl+R, Tab, every key in
 `ENVARC:CShell/csh.keys`); the bash-style language at the prompt and in `#!csh` scripts. Pipes, `&` and
 jobs of its own; `ls` coloured by kind (`ENVARC:FileColours`, shared with the terminal family).
