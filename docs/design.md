@@ -57,6 +57,12 @@ with &, prompt extras - "fix"):**
 - a pipe's commands are found and loaded once, before any starts (they were looked up twice):
   pipes in the csh language 0.99 of the ROM's.
 
+**Used by others:** CTerm's saved layouts read the tab Shell's cli_SetName (current drawer) and
+cli_CommandName (csh sets it while a program runs, run.c) - keep both right. CTerm 0.3b35+ ends a
+closed tab's input for good; csh 0.1b7 ends on a raw read of 0 (keep that, or tabs stay open).
+Idea from CTerm: keep the running command's whole line in a local variable (`_CMDLINE`) so a
+saved layout can start the program again with its arguments.
+
 **What csh still lacks** (the list to work from):
 - size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
   modular, load on demand); never measured slower to start (84 ms either way on the A1200).
