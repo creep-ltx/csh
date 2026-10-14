@@ -325,6 +325,93 @@ int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u)
     return n;
 }
 
+/* * expands to the files for this command: not for one whose template
+ * takes a single name (Dir, CD) - it gets the pattern, as on the Amiga */
+int os_globok(const char *cmd) { return comp_takesmany(cmd) != 0; }
+
+long os_mtime(const char *path)
+{
+    struct FileInfoBlock *fib;
+    APTR win = csh.me->pr_WindowPtr;
+    BPTR l;
+    long t = -1;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    l = Lock((STRPTR)path, SHARED_LOCK);
+    csh.me->pr_WindowPtr = win;
+    if (!l) return -1;
+    if ((fib = AllocDosObject(DOS_FIB, NULL))) {
+        if (Examine(l, fib)) t = fib->fib_Date.ds_Days * 86400 + fib->fib_Date.ds_Minute * 60 + fib->fib_Date.ds_Tick / 50;
+        FreeDosObject(DOS_FIB, fib);
+    }
+    UnLock(l);
+    return t;
+}
+
+/* ---- ( ) and $( ): the local variables and the current dir put back ---- */
+
+struct vsnap { struct vsnap *next; UBYTE type; UWORD flags; LONG len; char *name, *val; };
+struct snap { struct vsnap *vars; BPTR dir; char dirname[256]; };
+
+static int vsame(struct vsnap *v, struct LocalVar *lv)
+{
+    return v->type == lv->lv_Node.ln_Type && ieq(v->name, lv->lv_Node.ln_Name);
+}
+
+void *os_snap(void)
+{
+    struct snap *s = AllocVec(sizeof *s, MEMF_ANY | MEMF_CLEAR);
+    struct LocalVar *lv;
+    struct vsnap **tail;
+    if (!s) return NULL;
+    tail = &s->vars;
+    for (lv = (struct LocalVar *)csh.me->pr_LocalVars.mlh_Head; lv->lv_Node.ln_Succ; lv = (struct LocalVar *)lv->lv_Node.ln_Succ) {
+        int nl = strlen(lv->lv_Node.ln_Name);
+        struct vsnap *v = AllocVec(sizeof *v + nl + 1 + lv->lv_Len + 1, MEMF_ANY);
+        if (!v) break;
+        v->next = NULL;
+        v->type = lv->lv_Node.ln_Type;
+        v->flags = lv->lv_Flags;
+        v->len = lv->lv_Len;
+        v->name = (char *)(v + 1);
+        strcpy(v->name, lv->lv_Node.ln_Name);
+        v->val = v->name + nl + 1;
+        if (lv->lv_Len) memcpy(v->val, lv->lv_Value, lv->lv_Len);
+        v->val[lv->lv_Len] = 0;
+        *tail = v; tail = &v->next;
+    }
+    s->dir = DupLock(csh.me->pr_CurrentDir);
+    if (!GetCurrentDirName(s->dirname, sizeof s->dirname)) s->dirname[0] = 0;
+    return s;
+}
+
+void os_restore(void *p)
+{
+    struct snap *s = p;
+    struct LocalVar *lv, *nx;
+    struct vsnap *v, *vn;
+    char now[256];
+    if (!s) return;
+    /* a variable made or changed inside: away, or its value back */
+    for (lv = (struct LocalVar *)csh.me->pr_LocalVars.mlh_Head; (nx = (struct LocalVar *)lv->lv_Node.ln_Succ); lv = nx) {
+        for (v = s->vars; v && !vsame(v, lv); v = v->next) ;
+        if (!v) DeleteVar(lv->lv_Node.ln_Name, lv->lv_Node.ln_Type | GVF_LOCAL_ONLY);
+        else if (v->len != (LONG)lv->lv_Len || memcmp(v->val, lv->lv_Value, v->len))
+            SetVar(v->name, v->val, v->len, v->type | GVF_LOCAL_ONLY | (v->flags & GVF_BINARY_VAR));
+    }
+    /* one deleted inside: back */
+    for (v = s->vars; v; v = v->next) {
+        for (lv = (struct LocalVar *)csh.me->pr_LocalVars.mlh_Head; lv->lv_Node.ln_Succ && !vsame(v, lv); lv = (struct LocalVar *)lv->lv_Node.ln_Succ) ;
+        if (!lv->lv_Node.ln_Succ) SetVar(v->name, v->val, v->len, v->type | GVF_LOCAL_ONLY | (v->flags & GVF_BINARY_VAR));
+    }
+    for (v = s->vars; v; v = vn) { vn = v->next; FreeVec(v); }
+    if (!GetCurrentDirName(now, sizeof now)) now[0] = 0;
+    if (s->dir && strcmp(now, s->dirname)) {
+        UnLock(CurrentDir(s->dir));
+        SetCurrentDirName(s->dirname);
+    } else if (s->dir) UnLock(s->dir);
+    FreeVec(s);
+}
+
 int os_head(const char *path, char *buf, int n)
 {
     APTR win = csh.me->pr_WindowPtr;
@@ -379,6 +466,8 @@ int os_cd(const char *dir)
 long os_number(void) { return csh.me->pr_TaskNum; }
 
 int os_exists(const char *cmd) { return run_exists(cmd); }
+
+const char *os_self(void) { return csh.self[0] ? csh.self : "csh"; }
 
 /* The CLI number and where this csh's data lies: a csh started from csh
  * (same CLI) or one in another tab never picks the same T: or PIPE: name. */

@@ -29,6 +29,7 @@ struct csh {
     int usershell;         /* cshell: csh is this Shell itself (Resident shell ... REPLACE) */
     int system;            /* ... started by System(): ends when its commands do */
     char outercf[256];     /* the script csh was started from (its T: file is not csh's to delete) */
+    char self[300];        /* csh's own file (PROGDIR: and its name): a csh of its own for & runs it */
 };
 
 extern struct csh csh;
@@ -54,6 +55,7 @@ LONG run_prepared(struct cmdline *c, struct prepared *p);
 
 /* job.c */
 void job_news(void);
+int job_count(void);
 int job_running(void);
 void job_leave(void);
 int job_spawn_prepared(void *job, struct cmdline *c, long in, long out, struct prepared *p);

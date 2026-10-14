@@ -219,9 +219,28 @@ static BPTR openfor(const char *name, LONG mode, int append)
     return Open((STRPTR)name, mode);
 }
 
-int os_spawn(void *job, struct cmdline *c, long inh, long outh)
+void *os_prepare(struct cmdline *c)
+{
+    struct prepared *p = AllocVec(sizeof *p, MEMF_ANY);
+    if (!p) return NULL;
+    if (!run_prepare(c, p)) { FreeVec(p); return NULL; }
+    return p;
+}
+
+void os_unprepare(void *p)
+{
+    run_release(p, 0);
+    FreeVec(p);
+}
+
+int os_spawn(void *job, struct cmdline *c, long inh, long outh, void *prep)
 {
     struct prepared p;
+    if (prep) {
+        p = *(struct prepared *)prep;
+        FreeVec(prep);
+        return job_spawn_prepared(job, c, inh, outh, &p);
+    }
     if (!run_prepare(c, &p)) {
         /* counted as a stage that ended at once with its rc (10) */
         struct job *j = job;
@@ -413,10 +432,11 @@ static LONG reap(struct job *j, LONG *r2p)
 
 static void addjob(struct job *j);
 
-long os_job_end(void *job, long lastrc, int lastinternal)
+long os_job_end(void *job, long lastrc, int lastinternal, long *rcs, int *nrcs)
 {
     struct job *j = job;
     LONG rc;
+    *nrcs = 0;
     if (!j->bg) {
         LONG r2, lastr2 = csh.cli->cli_Result2;     /* the last stage's, when it ran in csh */
         DBG(("wait job\n"));
@@ -438,6 +458,10 @@ long os_job_end(void *job, long lastrc, int lastinternal)
             return 20;
         }
         DBG(("waited\n"));
+        {   /* each stage's rc, for PIPESTATUS and pipefail */
+            struct stage *s;
+            for (s = j->st; s && *nrcs < 32; s = s->next) rcs[(*nrcs)++] = s->rc;
+        }
         rc = reap(j, &r2);
         if (lastinternal || !j->nstages) { rc = lastrc; r2 = lastr2; }
         FreeVec(j);
@@ -573,7 +597,14 @@ static LONG changesignal(BPTR con, struct MsgPort *port)
 
 static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p);
 
-long os_lastrun(void *job, struct cmdline *c, long in) { return lastrun(job, c, in, NULL); }
+long os_lastrun(void *job, struct cmdline *c, long in, void *prep)
+{
+    struct prepared p;
+    if (!prep) return lastrun(job, c, in, NULL);
+    p = *(struct prepared *)prep;
+    FreeVec(prep);
+    return lastrun(job, c, in, &p);
+}
 
 long job_lastrun_prepared(void *job, struct cmdline *c, long in, struct prepared *p) { return lastrun(job, c, in, p); }
 
@@ -638,6 +669,14 @@ static void say(struct job *j, const char *what, LONG rc)
 }
 
 /* At the prompt: the jobs that ended since, said and given back. */
+int job_count(void)
+{
+    struct job *j;
+    int n = 0;
+    for (j = jobs; j; j = j->next) if (!alldone(j)) n++;
+    return n;
+}
+
 void job_news(void)
 {
     struct job *j, *n;

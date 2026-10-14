@@ -97,8 +97,13 @@ static void writeout(const char *dir, const char *path)
     FreeVec(t);
 }
 
+static int loaded;
+
+void hist_load_once(void) { if (!loaded) hist_load(); }
+
 void hist_load(void)
 {
+    loaded = 1;
     if (filesize(HISTENV) < 0) {
         readfile(HISTENVARC);
         writeout("ENV:CShell", HISTENV);

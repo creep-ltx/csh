@@ -40,6 +40,8 @@ static char sug[LINE_MAX];       /* the suggestion's rest */
 static int suglen;
 static int hidx, origlen, navigating, judged;
 static char *pending;            /* the rest of a pasted text, one line a prompt */
+const char *edit_rprompt;        /* RPROMPT (main.c), NULL = none */
+static int rplen;
 static int ungot;                /* a key read and given back (Ctrl+R ended by it) */
 
 static int getkey(void)
@@ -103,7 +105,8 @@ static int commentat(int i)
 static int iskw(const char *w, int n)
 {
     static const char *const kw[] = { "if", "then", "else", "elif", "fi", "for", "in", "while", "until",
-        "do", "done", "case", "esac", "function", "return", "break", "continue", "!", "{", "}", NULL };
+        "do", "done", "case", "esac", "function", "return", "break", "continue", "!", "{", "}",
+        "select", "[[", "]]", NULL };
     int i;
     for (i = 0; kw[i]; i++) if ((int)strlen(kw[i]) == n && !memcmp(kw[i], w, n)) return 1;
     return 0;
@@ -281,6 +284,16 @@ static int firstdiff(const char *now, int n, int *vis, const char **sgr, int *sg
     return i;
 }
 
+/* RPROMPT at the right edge of the line's row, while the line leaves room
+ * (it goes when the line reaches it, as in zsh); the cursor back after */
+static void rprompt(int T, int W)
+{
+    if (!rplen || T >= W || T + rplen + 1 >= W) return;
+    term_move(W - rplen - T - 1, 'C');
+    term_outs(edit_rprompt);
+    term_move(W - T - 1, 'D');
+}
+
 static void draw(void)
 {
     static char now[RMAX];
@@ -304,6 +317,7 @@ static void draw(void)
         reset(endcol);
         if (T > 0 && T % W == 0) term_outs(" \b");   /* onto the next row, whichever way it wraps */
         term_outs("\x1b[J");
+        rprompt(T, W);
     } else if (!lastvalid) {
         term_move(currow, 'A');
         term_out("\r", 1);
@@ -312,6 +326,7 @@ static void draw(void)
         reset(endcol);
         if (T > 0 && T % W == 0) term_outs(" \b");   /* onto the next row, whichever way it wraps */
         term_outs("\x1b[J");
+        rprompt(T, W);
     } else {                                    /* the same: only the cursor moves */
         drawnlen = T - plen;
         if (lastpos != plen + cur) {
@@ -510,6 +525,7 @@ int edit_line(const char *p, char *line, int size)
     }
     prompt = p;
     plen = vislen(p);
+    rplen = edit_rprompt ? vislen(edit_rprompt) : 0;
     len = cur = 0; buf[0] = 0;
     navigating = 0; suglen = 0; ungot = 0;
     fresh();

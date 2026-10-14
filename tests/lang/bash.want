@@ -1,0 +1,44 @@
+a.txt b.txt *.txt *.none
+a.txt
+b.txt
+  c.doc
+a.txt
+b.txt
+3 three four three four
+[one]
+[two]
+[three four]
+12 2
+HELLO AMIGA Amiga Hello World
+match
+ell
+42
+012
+in 2
+out 1
+RAM Disk:cb
+RAM Disk: then RAM Disk:cb
+RAM Disk:
+RAM Disk:cb
+RAM Disk:cb
+RAM Disk:
+RAM Disk:cb
+y
+y
+y
+phead done
+from g v=42 p2
+v
+n=3
+rest file
+3.142 1.234500e+03 0.5
+1 1
+1) red
+2) green
+#? picked green
+2 b
+3 3 0
+csh: readonly variable: R
+R=1
+done
+trapped at the end

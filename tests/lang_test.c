@@ -17,8 +17,9 @@ static void runin(const char *in, const char *text, const char *want)
 {
     const char *got;
     ran++;
+    lang_end();                 /* each case from nothing: no functions, arrays, traps of the last */
     fake_reset(in);
-    sh_opt_e = sh_opt_x = 0;
+    sh_opt_e = sh_opt_x = sh_opt_u = sh_opt_f = sh_opt_pipefail = 0;
     lang_line(text, 0);
     got = fake_out();
     if (strcmp(got, want)) {
@@ -32,6 +33,21 @@ static void runin(const char *in, const char *text, const char *want)
 }
 
 static void run(const char *text, const char *want) { runin("", text, want); }
+
+static const char *hl[] = { "List Work: ALL\n", "echo one two three\n", "Copy a b\n" };   /* the oldest first */
+static const char *hback(int k) { return k >= 1 && k <= 3 ? hl[3 - k] : NULL; }
+
+static void bang(const char *in, const char *want)
+{
+    char out[1024];
+    int r;
+    ran++;
+    fake_reset("");
+    r = bang_expand(in, out, sizeof out, hback);
+    if (r < 0) snprintf(out, sizeof out, "{err}%s", fake_out());
+    else if (!r) snprintf(out, sizeof out, "{same}");
+    if (strcmp(out, want)) { printf("FAIL bang [%s]: [%s], wanted [%s]\n", in, out, want); bad++; }
+}
 
 static void check(const char *text, int want)
 {
@@ -71,9 +87,10 @@ int main(void)
     run("Copy \"my file\" RAM:", "[Copy|\"my file\" RAM:]\n");
     run("Copy 'a*b' RAM:", "[Copy|\"a**b\" RAM:]\n");
     run("List #?.txt", "[List|#?.txt]\n");
-    run("List *.txt", "[List|#?.txt]\n");
+    run("List *.txt", "[List|a.txt b.txt]\n");
+    run("Dir *.txt; Dir *.info; List *.none", "[Dir|#?.txt]\n[Dir|#?.info]\n[List|#?.none]\n");
     run("List '*.txt'", "[List|\"**.txt\"]\n");
-    run("Type * >RAM:x", "[Type|* >RAM:x]\n");
+    run("Type * >RAM:x; Type '*'", "[Type|a.txt b.txt c.info dir >RAM:x]\n[Type|\"**\"]\n");
     run("Echo \"say \\\"hi\\\"\"", "say \"hi\"\n");
     run("List DIRS SINCE=yesterday", "[List|DIRS SINCE=yesterday]\n");
     run("Copy a \"\"", "[Copy|a \"\"]\n");
@@ -88,7 +105,7 @@ int main(void)
     run("Type <<<word", "{heredoc T:hd1:word\n}[Type| <T:hd1]\n");
     run("List | Sort", "{job List | Sort}[spawn List| in=1 out=11][last Sort| in=10]{end rc=0 own}\n");
     run("Wait 5 &", "{job & Wait 5}[spawn Wait|5 in=1 out=2]{end rc=0}\n");
-    run("List Work: | Search * x | Sort", "{job List Work: | Search * x | Sort}[spawn List|Work: in=1 out=11][spawn Search|* x in=10 out=13][last Sort| in=12]{end rc=0 own}\n");
+    run("List Work: | Search * x | Sort", "{job List Work: | Search * x | Sort}[spawn List|Work: in=1 out=11][spawn Search|a.txt b.txt c.info dir x in=10 out=13][last Sort| in=12]{end rc=0 own}\n");
     run("List | while read l; do echo \"got $l\"; done", "{job List | while ...}[spawn List| in=1 out=11]{sel in=10 out=0}{/sel}{close 10}{end rc=0 own}\n");
     run("echo hi | Sort", "{job echo hi | Sort}{sel in=1 out=51}hi\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\n");
     run("List >f.txt | Sort", "{job List | Sort}[spawn List| in=1 out=11 >f.txt][last Sort| in=10]{end rc=0 own}\n");
@@ -195,7 +212,7 @@ int main(void)
     run("List 2>/dev/null", "[List| *>NIL:]\n");
     run("alias ls='ls -F'; ls x", "[ls|-F x]\n");
     run("alias e='echo'; e '$HOME' 'it\"s' \"a'b\"", "$HOME it\"s a'b\n");
-    run("n=0; c() { n=$((n+1)); echo List; }; $(c) | Sort; echo ran $n", "{job $(c) | Sort}{sel in=1 out=51}[List|]\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\nran 1\n");
+    run("n=0; c() { n=$((n+1)); echo List; }; $(c) | Sort; echo ran $n", "{job $(c) | Sort}{sel in=1 out=51}[List|]\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\nran 0\n");
     run("{ echo hi; } >NOSUCH:x; echo rc $?", "{redir failed}rc 20\n");
     run("f() { echo in; }; f >NOSUCH:x; echo rc $?", "{redir failed}rc 20\n");
     run("echo >NOSUCH:x hi; echo rc $?", "{redir failed}rc 20\n");
@@ -225,6 +242,89 @@ int main(void)
     run("for f in *.txt; do echo $f; done", "a.txt\nb.txt\n");
     run("return x", "csh: return: not a number: x\n");
     run("List | Sort | NoSuchCmd; echo rc $?", "NoSuchCmd: Unknown command\nrc 10\n");
+    /* 2026-10-14: bash's missing parts */
+    run("echo $((2**10)) $((7>3?1:0)) $((5&3)) $((5|3)) $((5^3)) $((1<<4)) $((-7/2)) $((2**3**2))", "1024 1 1 7 6 16 -3 512\n");
+    run("x=5; ((x++)); echo $x; ((x+=10)); echo $x; ((x*=2, x-=1)); echo $x; echo $((x--)) $x $((--x))", "6\n16\n31\n31 30 29\n");
+    run("((0)); echo $?; ((3)); echo $?; let 'y=2*3' z=y+1; echo $y $z $?", "1\n0\n6 7 0\n");
+    run("i=1; echo $(( i > 0 && (j=5) )) $j; echo $(( 0 && (k=5) )) [$k]", "1 5\n0 []\n");
+    run("echo $((16#ff)) $((2#101)) $((010)) $((0x10))", "255 5 8 16\n");
+    run("for ((i=0; i<3; i++)); do echo $i; done", "0\n1\n2\n");
+    run("for ((i=10; i>0; i-=4)) { echo $i; }", "10\n6\n2\n");
+    run("echo $((1/0)); echo after", "csh: division by zero in 1/0\n");
+    run("a=(one two three); echo ${a[0]} ${a[2]} ${#a[@]} $a", "one three 3 one\n");
+    run("a=(x 'y z'); for i in \"${a[@]}\"; do echo [$i]; done; echo ${a[*]}", "[x]\n[y z]\nx y z\n");
+    run("a=(1 2); a+=(3 4); a[6]=7; echo ${a[@]} ${#a[@]} ${!a[@]}", "1 2 3 4 7 5 0 1 2 3 6\n");
+    run("a=(p q r s); echo ${a[-1]} ${a[@]:1:2} ${a[@]: -2}", "s q r r s\n");
+    run("a=(a b c); unset 'a[1]'; echo ${a[@]} ${#a[@]}; unset a; echo [${a[@]}]", "a c 2\n[]\n");
+    run("declare -A m; m[one]=1; m[two]=2; echo ${m[one]} ${m[two]} ${#m[@]}; for k in \"${!m[@]}\"; do echo $k=${m[$k]}; done", "1 2 2\none=1\ntwo=2\n");
+    run("declare -A m=([a]=x [b]='y z'); echo \"${m[b]}\"", "y z\n");
+    run("a=(); echo ${#a[@]}; for x in \"${a[@]}\"; do echo no; done; echo end", "0\nend\n");
+    run("i=2; a=(x y z w); echo ${a[i]} ${a[$i+1]} ${a[i-1]}", "z w y\n");
+    run("a=(x y); a[1]+=z; s=ab; s+=cd; echo ${a[1]} $s", "yz abcd\n");
+    run("f() { local -a v=(1 2 3); echo ${#v[@]}; }; v=(9); f; echo ${v[@]}", "3\n9\n");
+    run("s='hello world'; echo ${s:0:5} ${s:6} ${s: -5:3} ${s:1:-1}", "hello world wor ello worl\n");
+    run("s='a.b.c'; echo ${s/./-} ${s//./-} ${s/#a/A} ${s/%c/C} ${s/b}", "a-b.c a-b-c A.b.c a.b.C a..c\n");
+    run("s='Hello World'; echo ${s^^} ${s,,} ${s^} ${s,}", "HELLO WORLD hello world Hello World hello World\n");
+    run("x=y; y=deep; echo ${!x}", "deep\n");
+    run("echo $'a\\tb\\n' $'it\\'s' $'\\x41\\101'", "a\tb\n it's AA\n");
+    run("set -- a b c d; echo ${@:2} ${@:2:2} ${#@}", "b c d b c 4\n");
+    run("[[ abc == a* ]] && echo glob; [[ abc == 'a*' ]] || echo literal; [[ -f a.txt && ! -d a.txt ]] && echo file", "glob\nliteral\nfile\n");
+    run("x='a b'; [[ $x = 'a b' ]] && echo nosplit; [[ -z $nothing ]] && echo empty; [[ b > a ]] && echo gt", "nosplit\nempty\ngt\n");
+    run("[[ 10 -gt 9 && ( 1 -eq 2 || 3 -eq 3 ) ]] && echo yes", "yes\n");
+    run("[[ abc123 =~ ^([a-z]+)([0-9]+)$ ]] && echo ${BASH_REMATCH[0]} ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}", "abc123 abc 123\n");
+    run("[[ x.y =~ x.y ]] && echo dot; [[ xzy =~ 'x.y' ]] || echo quoted; [[ ab =~ a|c ]] && echo alt", "dot\nquoted\nalt\n");
+    run("[[ aaa =~ ^a{2,3}$ ]] && echo rep; [[ hello =~ l+o ]] && echo ${BASH_REMATCH[0]}; [[ x =~ [[:digit:]] ]] || echo nodigit", "rep\nllo\nnodigit\n");
+    run("[[ -v HOME ]] || echo nohome; x=1; [[ -v x ]] && echo set; a=(1); [[ -v a[0] ]] && echo elem", "nohome\nset\nelem\n");
+    run("[[ a.txt -nt b.txt ]] || echo older; [[ a.txt -ot b.txt ]] && echo ot", "older\not\n");
+    run("readonly r=5; r=6; echo $r; unset r; echo $r", "csh: readonly variable: r\n5\ncsh: readonly variable: r\n5\n");
+    run("declare -r q=1; declare -p q; a=(x); declare -p a", "declare -r q=\"1\"\ndeclare -a a=([0]=\"x\")\n");
+    run("v=out; f() { declare v=in; echo $v; }; f; echo $v", "in\nout\n");
+    run("x='a  b'; f() { local y=$x; echo \"$y\"; }; f", "a  b\n");
+    run("trap 'echo bye' EXIT; trap; trap - EXIT; trap", "trap -- 'echo bye' EXIT\n");
+    run("trap 'echo err $?' ERR; false; true; trap - ERR; false", "err 1\n");
+    run("f() { trap 'echo ret' RETURN; echo in; }; f", "in\nret\n");
+    run("trap 'echo x' TERM HUP; trap 'echo y' NOSUCH", "csh: trap: unknown signal NOSUCH\n");
+    run("set -- -a -b val -cd x; while getopts ab:cd o; do echo $o ${OPTARG:-}; done; echo $OPTIND", "a\nb val\nc\nd\n5\n");
+    run("OPTIND=1; while getopts :a: o -z -a; do echo \"$o $OPTARG\"; done", "? z\n: a\n");
+    runin("2\n\n9\n", "PS3='> '; select c in red green; do echo \"[$c] $REPLY\"; done", "1) red\n2) green\n> [green] 2\n> 1) red\n2) green\n> [] 9\n> \n");
+    run("printf '%.2f|%8.3f|%-6.1f|%e|%g|%g|%g\\n' 3.14159 2.5 -1.25 12345.678 0.0001 100000 1e7", "3.14|   2.500|-1.2  |1.234568e+04|0.0001|100000|1e+07\n");
+    run("printf '%05.1f|%+.0f|%.3g|%G\\n' 9.96 2.5 1234.5 0.000012", "010.0|+2|1.23e+03|1.2E-05\n");
+    run("printf -v out '%s-%d' a 5; echo $out", "a-5\n");
+    run("set -u; echo ${undefined:-ok}; echo $undefined; echo no", "ok\ncsh: unbound variable: undefined\n");
+    run("set -o pipefail; set -o | Sort", "{job set -o | Sort}{sel in=1 out=51}errexit\toff\nxtrace\toff\nnounset\toff\nnoglob\toff\npipefail\ton\nhistexpand\ton\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\n");
+    run("set -euo pipefail; echo $-", "eu\n");
+    run("set -f; echo *.txt; List *.txt; set +f; echo *.txt", "*.txt\n[List|#?.txt]\na.txt b.txt\n");
+    run("echo *.txt *.none \"*.txt\" '*'", "a.txt b.txt *.none *.txt *\n");
+    run("f() { echo $#; }; f *.txt", "2\n");
+    run("echo a?txt [ab].txt; Version ?", "a.txt a.txt b.txt\n[Version|?]\n");
+    run("x=1; (x=2; echo in $x); echo out $x", "in 2\nout 1\n");
+    run("x=1; y=$(x=5; echo $x); echo $x $y", "1 5\n");
+    run("(f() { echo inner; }; f); f 2>&1; echo rc $?", "inner\n[f| 2>&1]\nrc 0\n");
+    run("a=(1 2); (a+=(3); echo ${#a[@]}); echo ${#a[@]}", "3\n2\n");
+    run("set -- a b; (set -- z; echo $1); echo $1", "z\na\n");
+    run("cd -; echo $?", "csh: cd: OLDPWD not set\n10\n");
+    run("cat <(echo hi)", "{heredoc T:hd1:hi\n}[cat|T:hd1]\n");
+    run("List |& Sort", "{job List | Sort}[spawn List| in=1 out=11 2>&1][last Sort| in=10]{end rc=0 own}\n");
+    run("f() { echo f; }; f | Sort", "{job f | Sort}{heredoc T:hd1:#!csh\nf () { echo f; }\nset --\nf \n}[spawn csh|FROM T:hd1 in=1 out=11][last Sort| in=10]{end rc=0 own}\n");
+    run("echo bg &", "{job & echo bg}{heredoc T:hd1:#!csh\nset --\necho bg \n}[spawn csh|FROM T:hd1 in=1 out=2]{end rc=0}\n");
+    run("List | Sort; echo ${PIPESTATUS[@]}", "{job List | Sort}[spawn List| in=1 out=11][last Sort| in=10]{end rc=0 own}\n0 0\n");
+    runin("l1\nl2\n", "mapfile -t L; echo ${#L[@]} ${L[1]}", "2 l2\n");
+    runin("w1 w2  w3\n", "read -a W; echo ${#W[@]} ${W[2]}", "3 w3\n");
+    run("echo $((RANDOM >= 0 && RANDOM < 32768))", "1\n");
+    run("unset -f nosuch; f() { echo f; }; unset -f f; f", "[f|]\n");
+    bang("!!\n", "Copy a b\n");
+    bang("echo !$ !^ !*\n", "echo b a a b\n");
+    bang("!-2 x\n", "echo one two three x\n");
+    bang("!1\n", "List Work: ALL\n");
+    bang("!ec | Sort\n", "echo one two three | Sort\n");
+    bang("^a^z^\n", "Copy z b\n");
+    bang("^Copy^Move\n", "Move a b\n");
+    bang("[ a != b ] && ! true; echo '!!' ${!x} \\!!\n", "{same}");
+    bang("!nosuch\n", "{err}csh: event not found: !nosuch\n");
+    check("[[ a == b", 0);
+    check("(( 1 +", 0);
+    check("a=(1 2", 0);
+    check("for ((i=0;i<3;i++)); do echo; done", 1);
     printf("%d of %d language checks passed\n", ran - bad, ran);
     return bad != 0;
 }

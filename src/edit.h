@@ -65,6 +65,7 @@ const char *hist_get(int i);        /* 0 = the oldest */
 void hist_refresh(void);            /* lines other csh tabs added meanwhile */
 void hist_print(BPTR out);
 void hist_end(void);                /* csh ends: the lines freed */
+void hist_load_once(void);          /* loaded if it was not (a prompt without the editor) */
 
 /* comp.c */
 enum { W_NONE, W_COMMAND, W_BUILTIN, W_UNKNOWN };
@@ -73,9 +74,11 @@ void comp_end(void);                /* csh ends: the tables freed, C:'s locks gi
 int comp_complete(char *line, int *len, int *cur, int max);   /* Tab; TRUE if it changed */
 void comp_forget(void);             /* the command table is built again when next needed */
 int comp_listing(void);             /* a list was shown under the line */
+int comp_takesmany(const char *name);   /* its template: 1 several names (/M), 0 one, -1 none seen */
 
 /* edit.c */
 int edit_line(const char *prompt, char *line, int size);   /* -1 = end (Ctrl-\), -2 = Ctrl-C */
+extern const char *edit_rprompt;    /* RPROMPT: shown at the right edge while the line leaves room */
 void edit_droppaste(void);          /* the rest of a multi-line paste dropped (Ctrl-C) */
 void edit_end(void);                /* csh ends: the prompt's memory freed */
 

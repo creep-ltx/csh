@@ -13,10 +13,12 @@
 #include <exec/memory.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <proto/utility.h>
 #include <dos/rdargs.h>
 #include <dos/var.h>
 #include <stdio.h>
 #include <string.h>
+#include <dos/datetime.h>
 #include "csh.h"
 #include "edit.h"
 #include "lang.h"
@@ -97,6 +99,180 @@ static void shell_end(void)
 }
 #endif
 
+/* ---- the prompt ----
+ *
+ * PROMPT (or PS1), a csh variable, wins over the Amiga's Prompt command;
+ * $var and $(cmd) in it are expanded first (bash), then zsh's % escapes:
+ *   %N CLI number   %S %/ the dir   %~ the dir, HOME as ~   %c its last part
+ *   %V the volume   %R %? the rc    %T 12:34   %* 12:34:56   %D 2026-10-14
+ *   %j running jobs %M free memory  %E how long the last command took (2 s or more)
+ *   %h history number   %F{red}...%f colour   %K{blue}...%k background
+ *   %B...%b bold    %U...%u underline   %(?.ok.bad) %(j.jobs.none)   %% a %
+ * RPROMPT: the same, shown at the right edge (zsh). Without PROMPT: the
+ * Amiga's (cli_Prompt: %N %S %R), as before. */
+static long lastdur;            /* fiftieths of a second the last command took */
+
+static int pcolour(const char *name, int n, int bg)
+{
+    static const char *const names[] = { "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", NULL };
+    int i, v = -1;
+    for (i = 0; names[i]; i++) if ((int)strlen(names[i]) == n && !strncmp(names[i], name, n)) v = i;
+    if (v < 0 && n > 0 && name[0] >= '0' && name[0] <= '9') { v = 0; for (i = 0; i < n && name[i] >= '0' && name[i] <= '9'; i++) v = v * 10 + name[i] - '0'; }
+    if (v < 0 || v > 15) return bg ? 49 : 39;
+    /* CTerm's 30-37 are the Amiga's pens: its theme's colours are 90-97 */
+    if (v >= 8 || term_cterm) return (bg ? 100 : 90) + (v & 7);
+    return (bg ? 40 : 30) + v;
+}
+
+static int addsgr(char *out, int o, int code)
+{
+    out[o++] = 0x1b; out[o++] = '[';
+    o += ltoa10(code, out + o);
+    out[o++] = 'm';
+    return o;
+}
+
+static int dirname_(char *b, int size)
+{
+    if (!GetCurrentDirName(b, size)) { b[0] = 0; return 0; }
+    return strlen(b);
+}
+
+static const char *zprompt(const char *p, int colours, char *out, int size)
+{
+    int i, o = 0, n = strlen(p), depth = 0;
+    char dir[256];
+    for (i = 0; i < n && o < size - 64; i++) {
+        char c;
+        if (p[i] != '%' || i + 1 >= n) { out[o++] = p[i]; continue; }
+        c = p[++i];
+        switch (c) {
+        case 'N': case 'n': o += ltoa10(csh.me->pr_TaskNum, out + o); break;
+        case 'S': case 's': case '/': case 'd': {
+            int l = dirname_(dir, sizeof dir);
+            if (o + l < size - 64) { memcpy(out + o, dir, l); o += l; }
+            break;
+        }
+        case '~': {
+            char home[256];
+            int l = dirname_(dir, sizeof dir), hl = GetVar("HOME", home, sizeof home, 0);
+            const char *d = dir;
+            if (hl > 0 && !Strnicmp(dir, home, hl) && l >= hl) { out[o++] = '~'; d = dir + hl; if (*d && d[-1] != ':' && d[-1] != '/' && *d != '/') { o--; d = dir; } else if (*d && home[hl - 1] == ':') out[o++] = '/'; }
+            l = strlen(d);
+            if (o + l < size - 64) { memcpy(out + o, d, l); o += l; }
+            break;
+        }
+        case 'c': case 'C': {
+            int l = dirname_(dir, sizeof dir);
+            char *s = dir + l;
+            while (s > dir && s[-1] != ':' && s[-1] != '/') s--;
+            if (!*s) s = dir;                       /* Work: at the root */
+            l = strlen(s);
+            if (o + l < size - 64) { memcpy(out + o, s, l); o += l; }
+            break;
+        }
+        case 'V': {
+            int l = dirname_(dir, sizeof dir);
+            char *col = strchr(dir, ':');
+            if (col) l = col - dir;
+            if (o + l < size - 64) { memcpy(out + o, dir, l); o += l; }
+            break;
+        }
+        case 'R': case 'r': case '?': o += ltoa10(csh.cli->cli_ReturnCode, out + o); break;
+        case 'j': o += ltoa10(job_count(), out + o); break;
+        case 'h': case '!': o += ltoa10(hist_count() + 1, out + o); break;
+        case 'T': case '*': case 'D': {
+            struct DateTime dt;
+            char t[16], d[16];
+            DateStamp(&dt.dat_Stamp);
+            dt.dat_Format = FORMAT_CDN; dt.dat_Flags = 0; dt.dat_StrDay = NULL;
+            dt.dat_StrDate = d; dt.dat_StrTime = t;
+            if (DateToStr(&dt)) {
+                if (c == 'D') {             /* dd-mm-yy: 20yy-mm-dd */
+                    out[o++] = '2'; out[o++] = '0'; out[o++] = d[6]; out[o++] = d[7]; out[o++] = '-';
+                    out[o++] = d[3]; out[o++] = d[4]; out[o++] = '-'; out[o++] = d[0]; out[o++] = d[1];
+                } else { memcpy(out + o, t, c == 'T' ? 5 : 8); o += c == 'T' ? 5 : 8; }
+            }
+            break;
+        }
+        case 'M': {
+            ULONG m = AvailMem(MEMF_ANY);
+            char u = 'K';
+            m >>= 10;
+            if (m >= 10240) { m >>= 10; u = 'M'; }
+            if (m >= 10240) { m >>= 10; u = 'G'; }
+            o += ltoa10(m, out + o);
+            out[o++] = u;
+            break;
+        }
+        case 'E':
+            if (lastdur >= 100) {
+                long s = lastdur / 50;
+                if (s >= 60) { o += ltoa10(s / 60, out + o); out[o++] = 'm'; s %= 60; if (s < 10) out[o++] = '0'; o += ltoa10(s, out + o); out[o++] = 's'; }
+                else { o += ltoa10(s, out + o); out[o++] = '.'; out[o++] = '0' + (lastdur % 50) / 5; out[o++] = 's'; }
+            }
+            break;
+        case 'F': case 'K': {
+            int bg = c == 'K';
+            if (p[i + 1] == '{') {
+                const char *e = strchr(p + i + 2, '}');
+                if (e) { if (colours) o = addsgr(out, o, pcolour(p + i + 2, e - p - i - 2, bg)); i = e - p; }
+            } else if (colours) o = addsgr(out, o, bg ? 49 : 39);
+            break;
+        }
+        case 'f': if (colours) o = addsgr(out, o, 39); break;
+        case 'k': if (colours) o = addsgr(out, o, 49); break;
+        case 'B': if (colours) o = addsgr(out, o, 1); break;
+        case 'b': if (colours) o = addsgr(out, o, 22); break;
+        case 'U': if (colours) o = addsgr(out, o, 4); break;
+        case 'u': if (colours) o = addsgr(out, o, 24); break;
+        case '(': {
+            /* %(?.yes.no): the rc 0; %(j.yes.no): jobs running */
+            char t = p[i + 1], sep = p[i + 2];
+            int truth = t == '?' ? csh.cli->cli_ReturnCode == 0 : t == 'j' ? job_count() > 0 : 0;
+            const char *a = p + i + 3, *b = a, *e;
+            char sub[256], res[600];
+            int l;
+            if (!sep || depth > 2) break;
+            while (*b && *b != sep) b++;
+            if (!*b) break;
+            e = b + 1;
+            while (*e && *e != ')') e++;
+            if (!*e) break;
+            l = truth ? b - a : e - b - 1;
+            if (l > (int)sizeof sub - 1) l = sizeof sub - 1;
+            memcpy(sub, truth ? a : b + 1, l); sub[l] = 0;
+            depth++;
+            zprompt(sub, colours, res, sizeof res);
+            depth--;
+            l = strlen(res);
+            if (o + l < size - 64) { memcpy(out + o, res, l); o += l; }
+            i = e - p;
+            break;
+        }
+        case '%': out[o++] = '%'; break;
+        default: break;
+        }
+    }
+    if (colours && o) o = addsgr(out, o, 0);
+    out[o] = 0;
+    return out;
+}
+
+/* PROMPT / PS1 / RPROMPT: the variable expanded, then its escapes; NULL = not set */
+static const char *varprompt(const char *name, const char *alt, int colours, char *out, int size)
+{
+    char raw[512], *x;
+    int l = GetVar((STRPTR)name, raw, sizeof raw, GVF_BINARY_VAR);
+    if (l < 0 && alt) l = GetVar((STRPTR)alt, raw, sizeof raw, GVF_BINARY_VAR);
+    if (l < 0) return NULL;
+    if (!(x = lang_expandstr(raw))) return NULL;
+    zprompt(x, colours, out, size);
+    FreeVec(x);
+    os_flush();
+    return out;
+}
+
 /* The prompt from cli_Prompt (set by the ROM's Prompt command): %N the CLI
  * number, %S or %s the current dir, %R the last return code, %% a percent
  * sign; other escapes print nothing (as the 3.2 ROM Shell does). With the
@@ -108,6 +284,7 @@ static const char *prompt_text(int colours)
     UBYTE *bp = BADDR(csh.cli->cli_Prompt);
     char p[256], dir[256];
     int n = bp ? bp[0] : 0, i, o = 0, isdefault;
+    if (varprompt("PROMPT", "PS1", colours, out, sizeof out)) return out;
     if (n == 0) { strcpy(p, "%N.%S> "); n = 7; }
     else { memcpy(p, bp + 1, n); p[n] = 0; }
     isdefault = !strcmp(p, "%N.%S> ");
@@ -137,6 +314,14 @@ static const char *prompt_text(int colours)
     return out;
 }
 
+/* PS2: the prompt of a line that goes on (if ...; then) */
+static const char *ps2(void)
+{
+    static char b[64];
+    int l = GetVar("PS2", b, sizeof b, 0);
+    return l >= 0 ? b : "> ";
+}
+
 /* A whole line in the handle's DOS buffer (fh_Pos..fh_End)? */
 static int buffered_line(BPTR f)
 {
@@ -150,6 +335,47 @@ static int buffered_line(BPTR f)
 }
 
 static int editing = -1;     /* csh edits the line itself (an interactive console) */
+
+static const char *histback(int k)
+{
+    int n = hist_count();
+    return k >= 1 && k <= n ? hist_get(n - k) : NULL;
+}
+
+/* A line typed: !! and friends made into what they stand for (shown, as
+ * bash does); 0 = do not run it (an event not found, said) */
+static int bang(char *line, int size)
+{
+    static char out[LINE_MAX];
+    int r;
+    if (!sh_opt_histexp || (!strchr(line, '!') && line[0] != '^')) return 1;
+    if (editing <= 0) hist_load_once();
+    r = bang_expand(line, out, sizeof out, histback);
+    os_flush();
+    if (r < 0) { set_rc(10, 0); return 0; }
+    if (r > 0) {
+        strncpy(line, out, size - 1);
+        line[size - 1] = 0;
+        FPuts(csh.out, line);
+        Flush(csh.out);
+    }
+    return 1;
+}
+
+/* A typed line run, its time kept (%E, $CMD_DURATION in ms as fish's) */
+static void runtyped(char *line)
+{
+    long t0 = os_ticks(), d;
+    char b[16];
+    csh.broke = 0;
+    lang_line(line, 1);
+    os_flush();
+    if (lang_more) return;
+    d = os_ticks() - t0;
+    lastdur = d < 0 ? 0 : d;
+    ltoa10(lastdur * 20, b);
+    SetVar("CMD_DURATION", b, -1, LV_VAR | GVF_LOCAL_ONLY);
+}
 
 static void editor_start(void)
 {
@@ -249,6 +475,13 @@ static int smain(void)
     }
     oldfail = cli->cli_FailLevel;
     csh.bg0 = cli->cli_Background;
+    if (!csh.usershell) {   /* this very file, for the csh a job of csh's own needs (not C:'s, maybe older) */
+        char nm[108];
+        BPTR pd = GetProgramDir();
+        if (pd && GetProgramName(nm, sizeof nm) && NameFromLock(pd, csh.self, sizeof csh.self - 40) &&
+            strlen(FilePart(nm)) < 38) AddPart(csh.self, FilePart(nm), sizeof csh.self);
+        else csh.self[0] = 0;
+    }
     if (csh.usershell) {
         /* the Shell itself: no arguments; a command's streams are the CLI's
          * standard ones (the Guru Book 14.5.2), not the stream of command
@@ -266,7 +499,7 @@ static int smain(void)
         int n = 0;
         while (args && args[n]) n++;
         csh.in = Input(); csh.out = Output(); csh.module = cli->cli_Module;
-        r = arg[2] ? lang_eval((char *)arg[2]) : lang_source((char *)arg[0], n, args);
+        r = lang_script((char *)arg[0], n, args, (char *)arg[2]);
         os_flush();
         FreeArgs(rd);
         /* the break relay and the jobs end with csh: their code is csh's (a
@@ -275,6 +508,7 @@ static int smain(void)
         lang_end();
         os_end();
         run_end();
+        comp_end();             /* the templates * looked at (Dir takes one name) */
         if (!csh.module) cli->cli_Module = 0;
         return r;
     }
@@ -342,9 +576,9 @@ shell:
                 if (buffered_line(cli->cli_StandardInput)) {
                     if (!(g = getline_(cli->cli_StandardInput, line, sizeof line))) break;
                     if (g < 0) continue;
+                    if (!lang_more && !bang(line, sizeof line)) continue;
                     hist_add(line);
-                    lang_line(line, 1);
-                    os_flush();
+                    runtyped(line);
                     SetSignal(0, SIGBREAKF_CTRL_C);
                     continue;
                 }
@@ -360,25 +594,28 @@ shell:
                         lastcols = term_cols;
                     }
                 }
-                n = edit_line(lang_more ? "> " : prompt_text(1), line, sizeof line - 1);
+                {
+                    static char rp[300];
+                    edit_rprompt = lang_more ? NULL : varprompt("RPROMPT", NULL, 1, rp, sizeof rp);
+                }
+                n = edit_line(lang_more ? ps2() : prompt_text(1), line, sizeof line - 1);
                 term_close();
                 if (n == -2) { lang_reset(); continue; }
                 if (n < 0) break;
+                if (!lang_more && !bang(line, sizeof line)) continue;
                 hist_add(line);
-                csh.broke = 0;
-                lang_line(line, 1);
-                os_flush();
+                runtyped(line);
                 /* Ctrl-C in what a pasted line ran: the paste's other lines not run */
                 if (csh.broke || (cli->cli_ReturnCode && cli->cli_Result2 == ERROR_BREAK)) edit_droppaste();
                 SetSignal(0, SIGBREAKF_CTRL_C);
                 continue;
             }
-            FPuts(csh.out, lang_more ? "> " : prompt_text(0));
+            FPuts(csh.out, lang_more ? ps2() : prompt_text(0));
             Flush(csh.out);
             if (!(g = getline_(cli->cli_CurrentInput, line, sizeof line))) break;
             if (g < 0) continue;
-            lang_line(line, 1);
-            os_flush();
+            if (!lang_more && !bang(line, sizeof line)) continue;
+            runtyped(line);
             SetSignal(0, SIGBREAKF_CTRL_C);
             continue;
         }
@@ -386,6 +623,8 @@ shell:
         if (!script_step(line, sizeof line)) break;
     }
     DBG(("cshell: loop ends\n"));
+    lang_exittrap();
+    os_flush();
 
     job_leave();
     if (!csh.module) cli->cli_Module = 0;   /* jobs still run csh's code: it stays in memory */
@@ -396,6 +635,7 @@ shell:
     lang_end();
     os_end();
     run_end();
+    comp_end();
     if (!csh.usershell && !(cli->cli_Background && !csh.bg0)) {
         if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();
         cli->cli_CurrentInput = oldcur;

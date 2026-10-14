@@ -559,7 +559,11 @@ static LONG amiga_pipe(const char *line)
         }
     }
     FreeVec(sb);
-    return os_job_end(job, rc, 1);
+    {
+        long rcs[32];
+        int nrcs;
+        return os_job_end(job, rc, 1, rcs, &nrcs);
+    }
 }
 
 /* A line by the ROM Shell's rules (Amiga scripts): alias, $vars, backquotes,

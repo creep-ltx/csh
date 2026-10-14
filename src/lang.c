@@ -121,6 +121,7 @@ typedef struct {
 } Lex;
 
 static int isspace_(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+static int isassign(const char *w, int n);
 static int isop(char c) { return c == ';' || c == '&' || c == '|' || c == '(' || c == ')' || c == '<' || c == '>'; }
 
 /* Skips a $( ... ) or $(( ... )) or ${ ... } or `...`; p at its opening.
@@ -261,10 +262,11 @@ again:
         if (c == '&' && d == '>') { L->pos += e == '>' ? 3 : 2; t->op = e == '>' ? R_BOTHAPP : R_BOTH; return t->type = T_REDIR; }
         if (c == '&') { L->pos++; return t->type = T_AMP; }
         if (c == '|' && d == '|') { L->pos += 2; return t->type = T_OR; }
+        if (c == '|' && d == '&') { L->pos += 2; t->op = 1; return t->type = T_PIPE; }
         if (c == '|') { L->pos++; return t->type = T_PIPE; }
         if (c == '(') { L->pos++; return t->type = T_LP; }
         if (c == ')') { L->pos++; return t->type = T_RP; }
-        if (c == '<') {
+        if (c == '<' && d != '(') {
             if (d == '<' && e == '<') { L->pos += 3; t->op = R_HERESTR; }
             else if (d == '<' && e == '-') { L->pos += 3; t->op = R_HERE; t->len = 1; }
             else if (d == '<') { L->pos += 2; t->op = R_HERE; }
@@ -305,7 +307,34 @@ again:
             }
             if (q < L->n && L->src[q] == ')') { p = q + 1; continue; }
         }
+        if (c == '<' && p == L->pos && p + 1 < L->n && L->src[p + 1] == '(') {    /* <(cmd): a file of its output */
+            p = skipnested(L, p);
+            if (p < 0) { L->incomplete = 1; L->pos = L->n; return t->type = T_EOF; }
+            continue;
+        }
+        if (c == '(' && p > L->pos && L->src[p - 1] == '=' && isassign(L->src + L->pos, p - L->pos) == p - L->pos - 1) {
+            /* a=(x y z): the list is part of the word */
+            int d = 0;
+            for (; p < L->n; p++) {
+                char k = L->src[p];
+                if (k == '\\') { p++; continue; }
+                if (k == '\'') { while (++p < L->n && L->src[p] != '\'') ; continue; }
+                if (k == '"') { p = skipquote(L, p) - 1; if (p < 0) break; continue; }
+                if (k == '(') d++;
+                else if (k == ')' && --d == 0) break;
+            }
+            if (p < 0 || p >= L->n) { L->incomplete = 1; L->pos = L->n; return t->type = T_EOF; }
+            p++;
+            continue;
+        }
         if (isspace_(c) || c == '\n' || isop(c)) break;
+        if (c == '$' && p + 1 < L->n && L->src[p + 1] == '\'') {        /* $'...' */
+            p += 2;
+            while (p < L->n && L->src[p] != '\'') { if (L->src[p] == '\\') p++; p++; }
+            if (p >= L->n) { L->incomplete = 1; L->pos = L->n; return t->type = T_EOF; }
+            p++;
+            continue;
+        }
         if (c == '\'') {
             p++;
             while (p < L->n && L->src[p] != '\'') p++;
@@ -360,7 +389,7 @@ static int isstop(Tok *t)
 /* ---- the tree --------------------------------------------------------------- */
 
 enum { N_SIMPLE, N_LIST, N_AND, N_OR, N_NOT, N_PIPE, N_BG, N_IF, N_WHILE, N_UNTIL, N_FOR,
-       N_CASE, N_GROUP, N_SUB, N_FUNC };
+       N_CASE, N_GROUP, N_SUB, N_FUNC, N_ARITH, N_CFOR, N_COND, N_SELECT };
 
 typedef struct Case { char **pats; int npats; struct Node *body; struct Case *next; } Case;
 
@@ -375,7 +404,7 @@ typedef struct Node {
     char *name;
     Case *cases;
     int haslist;
-    char *src;                  /* a function's text */
+    char *src;                  /* a function's text; a pipe stage's (for a csh of its own) */
 } Node;
 
 static Node *mk(Lex *L, int type, Node *a, Node *b)
@@ -431,15 +460,20 @@ static char **growv(Lex *L, char **v, int n, char *s)
     return v;
 }
 
+/* name=, name+=, name[sub]= : where the = is (0 = not an assignment) */
 static int isassign(const char *w, int n)
 {
     int i;
     if (!n || !((w[0] >= 'a' && w[0] <= 'z') || (w[0] >= 'A' && w[0] <= 'Z') || w[0] == '_')) return 0;
-    for (i = 1; i < n; i++) {
-        if (w[i] == '=') return 1;
-        if (!((w[i] >= 'a' && w[i] <= 'z') || (w[i] >= 'A' && w[i] <= 'Z') || (w[i] >= '0' && w[i] <= '9') || w[i] == '_')) return 0;
+    for (i = 1; i < n && wordch(w[i]); i++) ;
+    if (i < n && w[i] == '[') {
+        int d = 0;
+        for (; i < n; i++) { if (w[i] == '[') d++; else if (w[i] == ']' && --d == 0) break; }
+        if (i >= n) return 0;
+        i++;
     }
-    return 0;
+    if (i + 1 < n && w[i] == '+' && w[i + 1] == '=') return i + 1;
+    return i < n && w[i] == '=' ? i : 0;
 }
 
 static Redir *parse_redir(Lex *L)
@@ -522,11 +556,104 @@ static int funcparens(Lex *L, long p)
     return p < L->n && L->src[p] == ')';
 }
 
+/* (( ... )) from p (just after the two): the position of the first of the
+ * closing two, -1 when it is not arithmetic (( (a); b )), -2 not ended yet. */
+static long scan_arith(Lex *L, long p)
+{
+    int d = 0;
+    for (; p < L->n; p++) {
+        char c = L->src[p];
+        if (c == '(') d++;
+        else if (c == ')') {
+            if (!d) return p + 1 < L->n ? (L->src[p + 1] == ')' ? p : -1) : -2;
+            d--;
+        } else if (c == '\'') { while (++p < L->n && L->src[p] != '\'') ; }
+        else if (c == '"') { p = skipquote(L, p) - 1; if (p < 0) return -2; }
+    }
+    return -2;
+}
+
+static int arithstart(Lex *L, Tok *t) { return t->type == T_LP && t->start + 1 < L->n && L->src[t->start + 1] == '('; }
+
+/* the body of for/while/select: do ... done (or { ... }) */
+static Node *parse_dobody(Lex *L, Node *n)
+{
+    if (peek(L)->type == T_SEMI || peek(L)->type == T_NL) next(L);
+    skipnl(L);
+    if (isword(peek(L), "{")) {
+        next(L);
+        n->b = parse_list(L);
+        if (!expect(L, "}")) return NULL;
+        return parse_compound_redirs(L, n);
+    }
+    if (!expect(L, "do")) return NULL;
+    n->b = parse_list(L);
+    if (!expect(L, "done")) return NULL;
+    return parse_compound_redirs(L, n);
+}
+
+/* [[ ... ]]: its words and operators, as written (expanded when run) */
+static Node *parse_cond(Lex *L)
+{
+    Node *n = mk(L, N_COND, NULL, NULL);
+    if (!n) return NULL;
+    for (;;) {
+        Tok *q = peek(L);
+        char *w;
+        if (L->error || L->incomplete) return NULL;
+        if (isword(q, "]]")) { next(L); break; }
+        if (q->type == T_EOF) { fail(L, q); return NULL; }
+        if (q->type == T_NL) { next(L); continue; }
+        if (n->nwords && !strcmp(n->words[n->nwords - 1], "=~") && q->type != T_EOF) {
+            /* the regex: up to a blank outside ( ) and quotes, its | ( ) its own */
+            long a = q->start, e = a;
+            int d = 0;
+            while (e < L->n) {
+                char c = L->src[e];
+                if (c == '\\') { e += 2; continue; }
+                if (c == '\'') { while (++e < L->n && L->src[e] != '\'') ; e++; continue; }
+                if (c == '"') { e = skipquote(L, e); if (e < 0) { L->incomplete = 1; return NULL; } continue; }
+                if (c == '(') d++;
+                else if (c == ')') { if (!d) break; d--; }
+                else if ((c == ' ' || c == '\t' || c == '\n') && !d) break;
+                e++;
+            }
+            n->words = growv(L, n->words, n->nwords++, astr(L->ar, L->src + a, e - a));
+            L->pos = e; L->have = 0;
+            continue;
+        }
+        if (q->type == T_WORD) w = q->text;
+        else if (q->type == T_AND) w = "&&";
+        else if (q->type == T_OR) w = "||";
+        else if (q->type == T_LP) w = "(";
+        else if (q->type == T_RP) w = ")";
+        else if (q->type == T_REDIR && q->op == R_IN) w = "<";
+        else if (q->type == T_REDIR && q->op == R_OUT) w = ">";
+        else { fail(L, q); return NULL; }
+        next(L);
+        n->words = growv(L, n->words, n->nwords++, w);
+    }
+    if (!n->nwords) { L->error = 1; sh_error("syntax error:", "[[ ]] with nothing inside"); return NULL; }
+    return parse_compound_redirs(L, n);
+}
+
 static Node *parse_command(Lex *L)
 {
     Tok *t = peek(L);
     Node *n;
     if (L->error || L->incomplete) return NULL;
+    if (arithstart(L, t)) {             /* (( expression )) */
+        long e = scan_arith(L, t->start + 2);
+        if (e == -2) { L->incomplete = 1; return NULL; }
+        if (e >= 0) {
+            n = mk(L, N_ARITH, NULL, NULL);
+            if (!n) return NULL;
+            n->name = astr(L->ar, L->src + t->start + 2, e - t->start - 2);
+            L->pos = e + 2; L->have = 0;
+            return parse_compound_redirs(L, n);
+        }
+    }
+    if (isword(t, "[[")) { next(L); return parse_cond(L); }
     if (t->type == T_LP) {
         next(L);
         n = mk(L, N_SUB, parse_list(L), NULL);
@@ -546,12 +673,33 @@ static Node *parse_command(Lex *L)
         if (!expect(L, "done")) return NULL;
         return parse_compound_redirs(L, n);
     }
-    if (isword(t, "for")) {
+    if (isword(t, "for") || isword(t, "select")) {
         Tok v;
+        int sel = isword(t, "select");
         next(L);
+        if (!sel && arithstart(L, peek(L))) {     /* for ((init; cond; step)) */
+            long a = peek(L)->start + 2, e = scan_arith(L, a), k, from = a;
+            int part = 0, d = 0;
+            if (e == -2) { L->incomplete = 1; return NULL; }
+            if (e < 0) { fail(L, peek(L)); return NULL; }
+            n = mk(L, N_CFOR, NULL, NULL);
+            if (!n) return NULL;
+            for (k = a; k <= e; k++) {
+                char c = k < e ? L->src[k] : ';';
+                if (c == '(') d++; else if (c == ')') d--;
+                if (c == ';' && !d) {
+                    if (part < 3) n->words = growv(L, n->words, n->nwords++, astr(L->ar, L->src + from, k - from));
+                    part++;
+                    from = k + 1;
+                }
+            }
+            if (part != 3) { L->error = 1; sh_error("syntax error:", "for (( init; condition; step ))"); return NULL; }
+            L->pos = e + 2; L->have = 0;
+            return parse_dobody(L, n);
+        }
         v = next(L);
         if (v.type != T_WORD) { fail(L, &v); return NULL; }
-        n = mk(L, N_FOR, NULL, NULL);
+        n = mk(L, sel ? N_SELECT : N_FOR, NULL, NULL);
         n->name = v.text;
         if (peek(L)->type == T_NL) skipnl(L);
         if (isword(peek(L), "in")) {
@@ -559,12 +707,7 @@ static Node *parse_command(Lex *L)
             n->haslist = 1;
             while (peek(L)->type == T_WORD) n->words = growv(L, n->words, n->nwords++, next(L).text);
         }
-        if (peek(L)->type == T_SEMI || peek(L)->type == T_NL) next(L);
-        skipnl(L);
-        if (!expect(L, "do")) return NULL;
-        n->b = parse_list(L);
-        if (!expect(L, "done")) return NULL;
-        return parse_compound_redirs(L, n);
+        return parse_dobody(L, n);
     }
     if (isword(t, "case")) {
         Tok w;
@@ -628,16 +771,26 @@ static Node *parse_command(Lex *L)
     return parse_simple(L);
 }
 
+static Node *parse_stage(Lex *L)
+{
+    long a = peek(L)->start;
+    Node *n = parse_command(L);
+    if (n && !n->src) n->src = astr(L->ar, L->src + a, (L->have ? L->peek.start : L->pos) - a);
+    return n;
+}
+
 static Node *parse_pipeline(Lex *L)
 {
     int bang = 0;
     Node *n;
     if (isword(peek(L), "!")) { next(L); bang = 1; }
-    n = parse_command(L);
+    n = parse_stage(L);
     while (n && peek(L)->type == T_PIPE) {
+        int err = peek(L)->op;          /* |& : the error stream into the pipe too */
         next(L);
         skipnl(L);
-        n = mk(L, N_PIPE, n, parse_command(L));
+        n = mk(L, N_PIPE, n, parse_stage(L));
+        if (n) n->haslist = err;
         if (n && !n->b) return NULL;
     }
     if (n && bang) n = mk(L, N_NOT, n, NULL);
@@ -700,7 +853,7 @@ static Node *parse_line(Lex *L)
 
 /* ---- running: state ----------------------------------------------------------- */
 
-int sh_opt_e, sh_opt_x;
+int sh_opt_e, sh_opt_x, sh_opt_u, sh_opt_f, sh_opt_pipefail, sh_opt_histexp = 1;
 int sh_break, sh_continue, sh_return, sh_exiting, sh_loops;
 long sh_exitrc;
 static long rc;
@@ -714,11 +867,15 @@ static char *pos0 = "csh";
 
 /* busy: calls of it running; dead: replaced while running, freed when the
  * last call ends (f() { f() { ...; }; ...; } redefines itself) */
-typedef struct Func { struct Func *next; char *name; Node *body; Arena ar; int busy, dead; } Func;
+typedef struct Func { struct Func *next; char *name, *src; Node *body; Arena ar; int busy, dead; } Func;
 
 /* local: the values a function's call put aside, given back at its end */
-typedef struct Saved { struct Saved *next; char *name, *val; int had; } Saved;
+typedef struct Saved { struct Saved *next; char *name, *val; int had; struct Arr *arr; } Saved;
 static Saved **frame;
+struct Arr;
+static struct Arr *arr_unlink(const char *name);
+static void arr_relink(struct Arr *a);
+static void arr_remove(const char *name);
 
 int sh_local(const char *name, const char *val)
 {
@@ -732,6 +889,7 @@ int sh_local(const char *name, const char *val)
         int l;
         if (v && (l = os_getlocal(name, v, LINE_MAX)) >= 0) { v[l < LINE_MAX ? l : LINE_MAX - 1] = 0; s->had = 1; s->val = v; }
         else if (v) os_free(v);
+        s->arr = arr_unlink(name);      /* an array of that name: put aside too */
         s->next = *frame;
         *frame = s;
     }
@@ -743,6 +901,8 @@ static void unframe(Saved *s)
 {
     while (s) {
         Saved *n = s->next;
+        arr_remove(s->name);
+        if (s->arr) arr_relink(s->arr);
         if (s->had) os_setvar(s->name, s->val, V_LOCAL); else os_unsetvar(s->name, 0);
         if (s->val) os_free(s->val);
         os_free(s);
@@ -772,8 +932,37 @@ void sh_setpos(int argc, char **argv)
     afree(&old);
 }
 
-void sh_print(const char *s) { os_write(s, strlen(s)); }
-void sh_printn(const char *s, int n) { os_write(s, n); }
+static char *hookbuf;
+static int hookn, hookcap, hooking;
+
+void sh_printn(const char *s, int n)
+{
+    if (hooking) {
+        if (hookn + n + 1 > hookcap) {
+            int cap = (hookn + n + 1) * 2;
+            char *p = os_alloc(cap);
+            if (!p) return;
+            if (hookbuf) { memcpy(p, hookbuf, hookn); os_free(hookbuf); }
+            hookbuf = p; hookcap = cap;
+        }
+        memcpy(hookbuf + hookn, s, n);
+        hookn += n;
+        hookbuf[hookn] = 0;
+        return;
+    }
+    os_write(s, n);
+}
+void sh_print(const char *s) { sh_printn(s, strlen(s)); }
+
+/* printf -v: what is printed goes into a string (os_alloc'ed) instead */
+void sh_hook(int on) { if (on) { hooking = 1; hookn = 0; if (hookbuf) hookbuf[0] = 0; } else hooking = 0; }
+char *sh_hooked(void)
+{
+    char *t = os_alloc(hookn + 1);
+    if (t && hookbuf) memcpy(t, hookbuf, hookn);
+    hooking = 0;
+    return t;
+}
 
 /* "csh: a b" on the error stream (not into a pipe, a > file or a $( )) */
 void sh_error(const char *a, const char *b)
@@ -860,86 +1049,496 @@ int gmatch(const char *p, const char *s, int nocase)
     return !*p;
 }
 
-/* ---- arithmetic: $(( )) -------------------------------------------------------- */
+/* ---- variables: csh's arrays and read-only names, over the Amiga's ------------- */
 
-typedef struct { const char *p; int err, depth; } Ar;
+/* An array lives in csh (AmigaDOS variables are plain strings): indexed
+ * (a sparse list kept in order, a[-1] the last) or associative (declare -A,
+ * in the order the keys came). $a alone is a[0], as in bash. */
+typedef struct AEnt { struct AEnt *next; long idx; char *key, *val; } AEnt;
+typedef struct Arr { struct Arr *next; int assoc, n; AEnt *head; char *name; } Arr;
+static Arr *arrs;
+typedef struct RO { struct RO *next; char name[1]; } RO;
+static RO *ros;
 
-static long a_expr(Ar *a);
+static int veq(const char *a, const char *b)       /* names: any case, as the Amiga's */
+{
+    while (*a && lc(*a) == lc(*b)) a++, b++;
+    return !*a && !*b;
+}
+
+static Arr *arr_make(const char *name, int assoc);
+
+static Arr *arr_find(const char *name)
+{
+    Arr *a;
+    for (a = arrs; a; a = a->next) if (veq(a->name, name)) return a;
+    return NULL;
+}
+
+int sh_isarray(const char *name) { Arr *a = arr_find(name); return a ? 1 + a->assoc : 0; }
+
+static AEnt *ent_new(long idx, const char *key, const char *val)
+{
+    int kl = key ? strlen(key) : 0, vl = strlen(val);
+    AEnt *e = os_alloc(sizeof *e + kl + vl + 2);
+    if (!e) return NULL;
+    e->idx = idx;
+    e->key = (char *)(e + 1);
+    memcpy(e->key, key ? key : "", kl);
+    e->val = e->key + kl + 1;
+    memcpy(e->val, val, vl);
+    return e;
+}
+
+static void arr_drop(Arr *a)
+{
+    AEnt *e, *n;
+    for (e = a->head; e; e = n) { n = e->next; os_free(e); }
+    os_free(a);
+}
+
+static Arr *arr_unlink(const char *name)
+{
+    Arr **p;
+    for (p = &arrs; *p; p = &(*p)->next)
+        if (veq((*p)->name, name)) { Arr *a = *p; *p = a->next; return a; }
+    return NULL;
+}
+
+static void arr_relink(Arr *a) { a->next = arrs; arrs = a; }
+
+static void arr_remove(const char *name)
+{
+    Arr **p;
+    for (p = &arrs; *p; p = &(*p)->next)
+        if (veq((*p)->name, name)) { Arr *a = *p; *p = a->next; arr_drop(a); return; }
+}
+
+/* An array of csh's own (PIPESTATUS, BASH_REMATCH) emptied for new values:
+ * the one there reused, no Amiga variable looked at (a pipe's cost) */
+static Arr *arr_fresh(const char *name)
+{
+    Arr *a;
+    AEnt *e, *n;
+    for (a = arrs; a; a = a->next) if (!strcmp(a->name, name)) break;
+    if (!a || a->assoc) return arr_make(name, 0);
+    for (e = a->head; e; e = n) { n = e->next; os_free(e); }
+    a->head = NULL;
+    a->n = 0;
+    return a;
+}
+
+static Arr *arr_make(const char *name, int assoc)
+{
+    Arr *a;
+    int l = strlen(name);
+    arr_remove(name);
+    os_unsetvar(name, 0);
+    if (!(a = os_alloc(sizeof *a + l + 1))) return NULL;
+    a->name = (char *)(a + 1);
+    memcpy(a->name, name, l);
+    a->assoc = assoc;
+    a->next = arrs;
+    arrs = a;
+    return a;
+}
+
+static long arr_last(Arr *a)
+{
+    AEnt *e;
+    long last = -1;
+    for (e = a->head; e; e = e->next) last = e->idx;
+    return last;
+}
+
+/* An indexed array's subscript: arithmetic, below 0 counted from the end. */
+static int arr_index(Arr *a, const char *key, long *idx)
+{
+    int err = 0;
+    long i = *key ? arith(key, &err) : 0;
+    if (err) { sh_error("bad array subscript:", key); return 0; }
+    if (i < 0) i += arr_last(a) + 1;
+    if (i < 0) { sh_error("bad array subscript:", key); return 0; }
+    *idx = i;
+    return 1;
+}
+
+static void arr_put(Arr *a, const char *key, const char *val)
+{
+    long idx = 0;
+    AEnt **pp, *e;
+    if (!a->assoc && !arr_index(a, key, &idx)) return;
+    for (pp = &a->head; *pp; pp = &(*pp)->next) {
+        if (a->assoc ? !strcmp((*pp)->key, key) : (*pp)->idx == idx) {
+            if (!(e = ent_new(idx, a->assoc ? key : NULL, val))) return;
+            e->next = (*pp)->next;
+            os_free(*pp);
+            *pp = e;
+            return;
+        }
+        if (!a->assoc && (*pp)->idx > idx) break;
+    }
+    if (!(e = ent_new(idx, a->assoc ? key : NULL, val))) return;
+    e->next = *pp;
+    *pp = e;
+    a->n++;
+}
+
+static void arr_push(Arr *a, const char *val)
+{
+    AEnt **pp, *e;
+    long idx = arr_last(a) + 1;
+    for (pp = &a->head; *pp; pp = &(*pp)->next) ;
+    if (!(e = ent_new(idx, NULL, val))) return;
+    *pp = e;
+    a->n++;
+}
+
+static AEnt *arr_at(Arr *a, const char *key)
+{
+    AEnt *e;
+    long idx = 0;
+    if (!a->assoc) {
+        int err = 0;
+        idx = *key ? arith(key, &err) : 0;
+        if (err) return NULL;
+        if (idx < 0) idx += arr_last(a) + 1;
+    }
+    for (e = a->head; e; e = e->next) if (a->assoc ? !strcmp(e->key, key) : e->idx == idx) return e;
+    return NULL;
+}
+
+static void arr_del(Arr *a, const char *key)
+{
+    AEnt **pp, *e = arr_at(a, key);
+    if (!e) return;
+    for (pp = &a->head; *pp != e; pp = &(*pp)->next) ;
+    *pp = e->next;
+    os_free(e);
+    a->n--;
+}
+
+static int ro_has(const char *name)
+{
+    RO *r;
+    for (r = ros; r; r = r->next) if (veq(r->name, name)) return 1;
+    return 0;
+}
+
+void sh_readonly(const char *name)
+{
+    RO *r;
+    if (ro_has(name) || !(r = os_alloc(sizeof *r + strlen(name)))) return;
+    strcpy(r->name, name);
+    r->next = ros;
+    ros = r;
+}
+
+static int ro_refuse(const char *name)
+{
+    if (!ros || !ro_has(name)) return 0;
+    sh_error("readonly variable:", name);
+    return 1;
+}
+
+static long t0;                 /* $SECONDS counts from here */
+static unsigned long seed;
+
+/* A variable's value: $RANDOM, $SECONDS, an array's a[0], else the Amiga
+ * variable. Length, -1 = not set. */
+int sh_get(const char *name, char *buf, int size)
+{
+    Arr *a;
+    if (name[0] == 'R' && !strcmp(name, "RANDOM") && size >= 8) {
+        if (!seed) seed = (unsigned long)os_ticks() * 2654435761UL + 1;
+        seed = seed * 1103515245UL + 12345;
+        return ltoa_((long)((seed >> 16) & 0x7fff), buf);
+    }
+    if (name[0] == 'S' && !strcmp(name, "SECONDS") && size >= 12) {
+        if (!t0) t0 = os_ticks() | 1;
+        return ltoa_((long)((unsigned long)(os_ticks() - t0) / 50), buf);
+    }
+    a = arrs ? arr_find(name) : NULL;
+    if (a) {
+        AEnt *e = arr_at(a, "0");
+        int l;
+        if (!e) return -1;
+        l = strlen(e->val);
+        if (l >= size) l = size - 1;
+        memcpy(buf, e->val, l); buf[l] = 0;
+        return l;
+    }
+    return os_getvar(name, buf, size);
+}
+
+/* Every assignment of the language: refused for a read-only name (said, 0). */
+int sh_set(const char *name, const char *val, int how)
+{
+    Arr *a;
+    if (ro_refuse(name)) return 0;
+    if (arrs && (a = arr_find(name)) && how != V_EXPORT) { arr_put(a, a->assoc ? "0" : "0", val); return 1; }
+    os_setvar(name, val, how);
+    return 1;
+}
+
+static int elem_get(const char *name, const char *key, char *buf, int size)
+{
+    Arr *a = arr_find(name);
+    AEnt *e;
+    int l;
+    if (!a) {                    /* x[0] of a plain variable is the variable */
+        int err = 0;
+        long i = *key ? arith(key, &err) : 0;
+        return !err && i == 0 ? os_getvar(name, buf, size) : -1;
+    }
+    if (!(e = arr_at(a, key))) return -1;
+    l = strlen(e->val);
+    if (l >= size) l = size - 1;
+    memcpy(buf, e->val, l); buf[l] = 0;
+    return l;
+}
+
+static int elem_set(const char *name, const char *key, const char *val)
+{
+    Arr *a = arr_find(name);
+    if (ro_refuse(name)) return 0;
+    if (!a) {                    /* a[1]=x makes a an array; a plain value becomes a[0] */
+        char old[LINE_MAX];
+        int l = os_getvar(name, old, sizeof old);
+        if (!(a = arr_make(name, 0))) return 0;
+        if (l >= 0) arr_put(a, "0", old);
+    }
+    arr_put(a, key, val);
+    return 1;
+}
+
+/* unset name, unset 'name[key]' */
+int sh_unset(const char *name)
+{
+    const char *br = strchr(name, '[');
+    if (br && name[strlen(name) - 1] == ']') {
+        char nm[128], key[256];
+        int nl = br - name, kl = strlen(br + 1) - 1;
+        Arr *a;
+        if (nl >= (int)sizeof nm || kl >= (int)sizeof key) return 0;
+        memcpy(nm, name, nl); nm[nl] = 0;
+        memcpy(key, br + 1, kl); key[kl] = 0;
+        if (ro_refuse(nm)) return 0;
+        if ((a = arr_find(nm))) arr_del(a, key);
+        return 1;
+    }
+    if (ro_refuse(name)) return 0;
+    arr_remove(name);
+    os_unsetvar(name, 1);
+    return 1;
+}
+
+/* ---- arithmetic: $(( )), (( )), let ----------------------------------------------- */
+
+/* bash's operators and their order: , = op= ?: || && | ^ & == != < <= > >=
+ * << >> + - * / % ** unary(! ~ - + ++ --) postfix(++ --). Where a side is
+ * not taken (0 && x, c ? a : b) its assignments are not made (noeval). */
+typedef struct { const char *p; int err, depth, noeval; } Ar;
+
+static long a_comma(Ar *a);
+static long a_assign(Ar *a);
+static long a_unary(Ar *a);
 
 static void a_sp(Ar *a) { while (*a->p == ' ' || *a->p == '\t' || *a->p == '\n') a->p++; }
 
+typedef struct { char name[64], key[64]; int haskey; } LVal;
+
+/* name or name[subscript] */
+static void a_lval(Ar *a, LVal *v)
+{
+    int n = 0;
+    while (wordch(*a->p) && n < 63) v->name[n++] = *a->p++;
+    v->name[n] = 0;
+    v->haskey = 0;
+    if (*a->p == '[') {
+        const char *s = ++a->p;
+        int d = 1, kl;
+        char raw[64];
+        while (*a->p && !(*a->p == ']' && --d == 0)) { if (*a->p == '[') d++; a->p++; }
+        if (*a->p != ']') { a->err = 1; return; }
+        kl = a->p - s;
+        if (kl > 63) kl = 63;
+        memcpy(raw, s, kl); raw[kl] = 0;
+        a->p++;
+        v->haskey = 1;
+        if (sh_isarray(v->name) == 2) strcpy(v->key, raw);
+        else {
+            int err = 0;
+            long i = arith(raw, &err);
+            if (err) a->err = err;
+            ltoa_(i, v->key);
+        }
+    }
+}
+
 /* A variable's value, itself arithmetic (x=y+1); its own frame, so a_prim's
  * stays small (it calls itself for each ( - ! ~). */
-static long __attribute__((noinline)) a_var(Ar *a)
+static long __attribute__((noinline)) a_valof(Ar *a, LVal *v)
 {
     static int nest;            /* x=x: a variable naming itself */
-    char name[64], buf[64];
-    int n = 0;
-    long v = 0;
-    while (wordch(*a->p) && n < 63) name[n++] = *a->p++;
-    name[n] = 0;
-    if (os_getvar(name, buf, sizeof buf) > 0) {
+    char buf[64];
+    long r = 0;
+    int l = v->haskey ? elem_get(v->name, v->key, buf, sizeof buf) : sh_get(v->name, buf, sizeof buf);
+    if (l > 0) {
         int err = 0;
         if (nest >= 8) { a->err = 1; return 0; }
         nest++;
-        v = arith(buf, &err);
+        r = arith(buf, &err);
         nest--;
         if (err) a->err = err;
-    }
-    return v;
+    } else if (l < 0 && sh_opt_u && !a->noeval) { sh_error("unbound variable:", v->name); a->err = 3; }
+    return r;
 }
 
-static long a_prim1(Ar *a);
-
-static long a_prim(Ar *a)
+static void a_store(Ar *a, LVal *v, long x)
 {
-    long v;
-    if (++a->depth > 100) { a->err = 1; return 0; }   /* ((((... or - - - -...: the stack */
-    v = a_prim1(a);
-    a->depth--;
+    char b[24];
+    if (a->noeval || a->err) return;
+    ltoa_(x, b);
+    if (!(v->haskey ? elem_set(v->name, v->key, b) : sh_set(v->name, b, V_ASSIGN))) a->err = 3;
+}
+
+static long a_div(Ar *a, long x, long y, int mod)
+{
+    if (!y) { if (!a->noeval) a->err = 2; return 0; }
+    return mod ? x % y : x / y;
+}
+
+static long a_binop(Ar *a, long x, char op, long y)
+{
+    switch (op) {
+    case '+': return x + y;
+    case '-': return x - y;
+    case '*': return x * y;
+    case '/': return a_div(a, x, y, 0);
+    case '%': return a_div(a, x, y, 1);
+    case '&': return x & y;
+    case '|': return x | y;
+    case '^': return x ^ y;
+    case '<': return x << y;
+    case '>': return x >> y;
+    }
+    return y;
+}
+
+static long a_number(Ar *a)
+{
+    long v = 0;
+    int base = 10;
+    if (a->p[0] == '0' && (a->p[1] == 'x' || a->p[1] == 'X')) { base = 16; a->p += 2; }
+    else if (a->p[0] == '0' && a->p[1] >= '0' && a->p[1] <= '7') base = 8;
+    else {                      /* base#digits: 2#101, 16#ff */
+        const char *q = a->p;
+        long b = 0;
+        while (*q >= '0' && *q <= '9') b = b * 10 + *q++ - '0';
+        if (*q == '#' && b >= 2 && b <= 36) { base = b; a->p = q + 1; }
+    }
+    for (;;) {
+        char c = *a->p;
+        int d = c >= '0' && c <= '9' ? c - '0' : (c | 32) >= 'a' && (c | 32) <= 'z' ? (c | 32) - 'a' + 10 : 99;
+        if (d >= base) break;
+        v = v * base + d;
+        a->p++;
+    }
+    if (wordch(*a->p)) a->err = 1;      /* 09, 12abc */
     return v;
 }
 
 static long a_prim1(Ar *a)
 {
-    long v = 0;
     a_sp(a);
     if (*a->p == '(') {
+        long v;
         a->p++;
-        v = a_expr(a);
+        v = a_comma(a);
         a_sp(a);
         if (*a->p == ')') a->p++; else a->err = 1;
         return v;
     }
-    if (*a->p == '-') { a->p++; return -a_prim(a); }
-    if (*a->p == '+') { a->p++; return a_prim(a); }
-    if (*a->p == '!') { a->p++; return !a_prim(a); }
-    if (*a->p == '~') { a->p++; return ~a_prim(a); }
-    if (*a->p >= '0' && *a->p <= '9') {
-        int base = 10;
-        if (a->p[0] == '0' && (a->p[1] == 'x' || a->p[1] == 'X')) { base = 16; a->p += 2; }
-        for (;;) {
-            char c = *a->p;
-            int d = c >= '0' && c <= '9' ? c - '0' : (c | 32) >= 'a' && (c | 32) <= 'f' ? (c | 32) - 'a' + 10 : 99;
-            if (d >= base) break;
-            v = v * base + d;
-            a->p++;
+    if (*a->p >= '0' && *a->p <= '9') return a_number(a);
+    if ((*a->p >= 'a' && *a->p <= 'z') || (*a->p >= 'A' && *a->p <= 'Z') || *a->p == '_') {
+        LVal lv;
+        char op = 0;
+        int ol = 0;
+        a_lval(a, &lv);
+        if (a->err) return 0;
+        a_sp(a);
+        if ((a->p[0] == '+' && a->p[1] == '+') || (a->p[0] == '-' && a->p[1] == '-')) {   /* x++ x-- */
+            long v = a_valof(a, &lv);
+            a_store(a, &lv, a->p[0] == '+' ? v + 1 : v - 1);
+            a->p += 2;
+            return v;
         }
-        return v;
+        if (a->p[0] == '=' && a->p[1] != '=') { op = '='; ol = 1; }
+        else if (a->p[1] == '=' && a->p[0] && strchr("+-*/%&|^", a->p[0])) { op = a->p[0]; ol = 2; }
+        else if ((a->p[0] == '<' || a->p[0] == '>') && a->p[1] == a->p[0] && a->p[2] == '=') { op = a->p[0]; ol = 3; }
+        if (op) {
+            long r;
+            a->p += ol;
+            r = a_assign(a);
+            if (op != '=') r = a_binop(a, a_valof(a, &lv), op, r);
+            a_store(a, &lv, r);
+            return r;
+        }
+        return a_valof(a, &lv);
     }
-    if ((*a->p >= 'a' && *a->p <= 'z') || (*a->p >= 'A' && *a->p <= 'Z') || *a->p == '_') return a_var(a);
     a->err = 1;
     return 0;
 }
 
+static long a_unary(Ar *a)
+{
+    long v;
+    if (++a->depth > 100) { a->err = 1; return 0; }   /* ((((... or - - - -...: the stack */
+    a_sp(a);
+    if ((a->p[0] == '+' && a->p[1] == '+') || (a->p[0] == '-' && a->p[1] == '-')) {   /* ++x --x */
+        int inc = a->p[0] == '+' ? 1 : -1;
+        const char *q = a->p + 2;
+        while (*q == ' ') q++;
+        if ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || *q == '_') {
+            LVal lv;
+            a->p = q;
+            a_lval(a, &lv);
+            v = a_valof(a, &lv) + inc;
+            a_store(a, &lv, v);
+            a->depth--;
+            return v;
+        }
+    }
+    if (*a->p == '-') { a->p++; v = -a_unary(a); }
+    else if (*a->p == '+') { a->p++; v = a_unary(a); }
+    else if (*a->p == '!') { a->p++; v = !a_unary(a); }
+    else if (*a->p == '~') { a->p++; v = ~a_unary(a); }
+    else v = a_prim1(a);
+    a->depth--;
+    return v;
+}
+
+static long a_pow(Ar *a)
+{
+    long v = a_unary(a), e, r = 1;
+    a_sp(a);
+    if (a->p[0] != '*' || a->p[1] != '*') return v;
+    a->p += 2;
+    e = a_pow(a);                       /* right to left: 2**3**2 is 2**9 */
+    if (e < 0) { if (!a->noeval) a->err = 4; return 0; }
+    while (e-- > 0 && r) r *= v;
+    return r;
+}
+
 static long a_mul(Ar *a)
 {
-    long v = a_prim(a);
+    long v = a_pow(a);
     for (;;) {
+        char c;
         a_sp(a);
-        if (*a->p == '*' && a->p[1] != '*') { a->p++; v *= a_prim(a); }
-        else if (*a->p == '/') { long d; a->p++; d = a_prim(a); if (!d) { a->err = 2; return 0; } v /= d; }
-        else if (*a->p == '%') { long d; a->p++; d = a_prim(a); if (!d) { a->err = 2; return 0; } v %= d; }
+        c = *a->p;
+        if ((c == '*' || c == '/' || c == '%') && a->p[1] != '=' && a->p[1] != '*') { a->p++; v = a_binop(a, v, c, a_pow(a)); }
         else return v;
     }
 }
@@ -948,49 +1547,161 @@ static long a_add(Ar *a)
 {
     long v = a_mul(a);
     for (;;) {
+        char c;
         a_sp(a);
-        if (*a->p == '+') { a->p++; v += a_mul(a); }
-        else if (*a->p == '-') { a->p++; v -= a_mul(a); }
+        c = *a->p;
+        if ((c == '+' || c == '-') && a->p[1] != '=' && a->p[1] != c) { a->p++; v = a_binop(a, v, c, a_mul(a)); }
+        else if ((c == '+' || c == '-') && a->p[1] == c) { a->p++; v = a_binop(a, v, c, a_mul(a)); }   /* 1--1, 1++x */
         else return v;
     }
 }
 
-static long a_cmp(Ar *a)
+static long a_shift(Ar *a)
 {
     long v = a_add(a);
     for (;;) {
         a_sp(a);
-        if (a->p[0] == '<' && a->p[1] == '=') { a->p += 2; v = v <= a_add(a); }
-        else if (a->p[0] == '>' && a->p[1] == '=') { a->p += 2; v = v >= a_add(a); }
-        else if (a->p[0] == '<' && a->p[1] != '<') { a->p++; v = v < a_add(a); }
-        else if (a->p[0] == '>' && a->p[1] != '>') { a->p++; v = v > a_add(a); }
-        else if (a->p[0] == '=' && a->p[1] == '=') { a->p += 2; v = v == a_add(a); }
-        else if (a->p[0] == '!' && a->p[1] == '=') { a->p += 2; v = v != a_add(a); }
-        else return v;
+        if ((a->p[0] == '<' || a->p[0] == '>') && a->p[1] == a->p[0] && a->p[2] != '=') {
+            char c = a->p[0];
+            a->p += 2;
+            v = a_binop(a, v, c, a_add(a));
+        } else return v;
     }
 }
 
-static long a_expr(Ar *a)
+static long a_rel(Ar *a)
 {
-    long v = a_cmp(a);
+    long v = a_shift(a);
     for (;;) {
         a_sp(a);
-        if (a->p[0] == '&' && a->p[1] == '&') { long w; a->p += 2; w = a_cmp(a); v = v && w; }
-        else if (a->p[0] == '|' && a->p[1] == '|') { long w; a->p += 2; w = a_cmp(a); v = v || w; }
+        if (a->p[0] == '<' && a->p[1] == '=') { a->p += 2; v = v <= a_shift(a); }
+        else if (a->p[0] == '>' && a->p[1] == '=') { a->p += 2; v = v >= a_shift(a); }
+        else if (a->p[0] == '<' && a->p[1] != '<') { a->p++; v = v < a_shift(a); }
+        else if (a->p[0] == '>' && a->p[1] != '>') { a->p++; v = v > a_shift(a); }
         else return v;
     }
 }
 
+static long a_eq(Ar *a)
+{
+    long v = a_rel(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '=' && a->p[1] == '=') { a->p += 2; v = v == a_rel(a); }
+        else if (a->p[0] == '!' && a->p[1] == '=') { a->p += 2; v = v != a_rel(a); }
+        else return v;
+    }
+}
+
+static long a_band(Ar *a)
+{
+    long v = a_eq(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '&' && a->p[1] != '&' && a->p[1] != '=') { a->p++; v &= a_eq(a); }
+        else return v;
+    }
+}
+
+static long a_bxor(Ar *a)
+{
+    long v = a_band(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '^' && a->p[1] != '=') { a->p++; v ^= a_band(a); }
+        else return v;
+    }
+}
+
+static long a_bor(Ar *a)
+{
+    long v = a_bxor(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '|' && a->p[1] != '|' && a->p[1] != '=') { a->p++; v |= a_bxor(a); }
+        else return v;
+    }
+}
+
+static long a_land(Ar *a)
+{
+    long v = a_bor(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '&' && a->p[1] == '&') {
+            long w;
+            a->p += 2;
+            if (!v) a->noeval++;
+            w = a_bor(a);
+            if (!v) a->noeval--;
+            v = v && w;
+        } else return v;
+    }
+}
+
+static long a_lor(Ar *a)
+{
+    long v = a_land(a);
+    for (;;) {
+        a_sp(a);
+        if (a->p[0] == '|' && a->p[1] == '|') {
+            long w;
+            a->p += 2;
+            if (v) a->noeval++;
+            w = a_land(a);
+            if (v) a->noeval--;
+            v = v || w;
+        } else return v;
+    }
+}
+
+static long a_assign(Ar *a)                /* c ? x : y (assignments are made in a_prim1) */
+{
+    long c = a_lor(a), x, y;
+    a_sp(a);
+    if (*a->p != '?') return c;
+    a->p++;
+    if (!c) a->noeval++;
+    x = a_comma(a);
+    if (!c) a->noeval--;
+    a_sp(a);
+    if (*a->p != ':') { a->err = 1; return 0; }
+    a->p++;
+    if (c) a->noeval++;
+    y = a_assign(a);
+    if (c) a->noeval--;
+    return c ? x : y;
+}
+
+static long a_comma(Ar *a)
+{
+    long v = a_assign(a);
+    for (;;) {
+        a_sp(a);
+        if (*a->p == ',') { a->p++; v = a_assign(a); }
+        else return v;
+    }
+}
+
+/* err: 1 bad, 2 division by zero, 3 said already (readonly, unbound), 4 negative exponent */
 long arith(const char *expr, int *err)
 {
     Ar a;
     long v;
-    a.p = expr; a.err = 0; a.depth = 0;
-    v = a_expr(&a);
+    a.p = expr; a.err = 0; a.depth = 0; a.noeval = 0;
     a_sp(&a);
-    if (*a.p) a.err = 1;
+    if (!*a.p) { *err = 0; return 0; }          /* $(( )) is 0 */
+    v = a_comma(&a);
+    a_sp(&a);
+    if (*a.p && !a.err) a.err = 1;
     *err = a.err;
     return v;
+}
+
+static void arith_error(int err, const char *text)
+{
+    if (err == 3) return;
+    sh_error(err == 2 ? "division by zero in" : err == 4 ? "exponent less than 0 in" : "bad arithmetic:", text);
 }
 
 /* ---- expanding words ------------------------------------------------------------- */
@@ -1005,6 +1716,8 @@ typedef struct {
     int patmode;                /* a pattern: quoted * ? [ \ get a \ (literal for gmatch) */
     int sqlit;                  /* ${x:-'a'} inside "...": the ' are kept, as bash does */
     int heredoc;                /* a here-document's body: \" stays \" */
+    int atempty;                /* "${a[@]}" had no elements: no word at all */
+    int remode;                 /* a regex: quoted characters lose their meaning there */
 } Exp;
 
 static void endfield(Exp *e)
@@ -1032,13 +1745,14 @@ static void endfield(Exp *e)
 static void qput(Exp *e, char c)
 {
     if (e->patmode && (c == '*' || c == '?' || c == '[' || c == '\\')) sputc(&e->cur, '\\');
+    if (e->remode && c && strchr(".[]()*+?{}|^$\\", c)) sputc(&e->cur, '\\');
     sputc(&e->cur, c);
 }
 
 static void qputs(Exp *e, const char *s, int n)
 {
     int i;
-    if (!e->patmode) { sput(&e->cur, s, n); return; }
+    if (!e->patmode && !e->remode) { sput(&e->cur, s, n); return; }
     for (i = 0; i < n; i++) qput(e, s[i]);
 }
 
@@ -1064,7 +1778,7 @@ static long caprc;
 static int capcount;
 static long subshell(Node *n, const char *text, int len);
 
-static char *capture(Arena *ar, const char *text, int len)
+static char *capture2(Arena *ar, const char *text, int len, int trim)
 {
     void *save = os_capture();
     char *out = NULL, *r;
@@ -1074,20 +1788,32 @@ static char *capture(Arena *ar, const char *text, int len)
     capcount++;
     n = os_captured(save, &out);
     if (!out) return astr(ar, "", 0);
-    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) n--;
+    while (trim && n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) n--;
     r = astr(ar, out, n);
     os_free(out);
     return r;
 }
 
+static char *capture(Arena *ar, const char *text, int len) { return capture2(ar, text, len, 1); }
+
+
 static int getparam(Exp *e, const char *name, int n, Str *val)
 {
     char b[24];
+    (void)e;
     val->n = 0;
     if (n == 1 && name[0] == '?') { sput(val, b, ltoa_(rc, b)); return 1; }
     if (n == 1 && name[0] == '#') { sput(val, b, ltoa_(npos, b)); return 1; }
     if (n == 1 && name[0] == '$') { sput(val, b, ltoa_(os_number(), b)); return 1; }
     if (n == 1 && name[0] == '0') { sput(val, pos0, strlen(pos0)); return 1; }
+    if (n == 1 && name[0] == '-') {             /* the options on: $- */
+        if (sh_opt_e) sputc(val, 'e');
+        if (sh_opt_f) sputc(val, 'f');
+        if (sh_opt_u) sputc(val, 'u');
+        if (sh_opt_x) sputc(val, 'x');
+        if (os_interactive()) sputc(val, 'i');
+        return 1;
+    }
     if (n == 1 && (name[0] == '*' || name[0] == '@')) {
         int i;
         for (i = 0; i < npos; i++) { if (i) sputc(val, ' '); sput(val, pos[i], strlen(pos[i])); }
@@ -1104,7 +1830,7 @@ static int getparam(Exp *e, const char *name, int n, Str *val)
         int l;
         if (n >= (int)sizeof nm) return 0;
         memcpy(nm, name, n); nm[n] = 0;
-        if ((l = os_getvar(nm, buf, sizeof buf)) < 0) return 0;
+        if ((l = sh_get(nm, buf, sizeof buf)) < 0) return 0;
         sput(val, buf, l);
         return 1;
     }
@@ -1112,71 +1838,330 @@ static int getparam(Exp *e, const char *name, int n, Str *val)
 
 static void expand_into(Exp *e, const char *s, int n, int inquotes);
 
+/* A part of a ${ } expanded as one string (a subscript, an offset, a pattern). */
+static char *subexp(Exp *e, const char *s, int n, int patmode)
+{
+    Exp sub;
+    memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
+    sub.patmode = patmode;
+    expand_into(&sub, s, n, !patmode);
+    return sub.cur.s ? sub.cur.s : astr(e->ar, "", 0);
+}
+
+/* The values a parameter stands for: one, or a list ($@, ${a[@]}, ${!a[@]}). */
+typedef struct { char **v; int n, set, list, star; } Vals;
+
+static void vadd(Exp *e, Vals *v, const char *s, int n)
+{
+    if ((v->n & 15) == 0) {
+        char **nv = aalloc(e->ar, (v->n + 16) * sizeof *nv);
+        if (!nv) return;
+        if (v->v) memcpy(nv, v->v, v->n * sizeof *nv);
+        v->v = nv;
+    }
+    v->v[v->n++] = astr(e->ar, s, n);
+}
+
+static void getvals(Exp *e, const char *name, int nl, const char *sub, int sl, int keys, Vals *v)
+{
+    char nm[128];
+    Arr *a;
+    memset(v, 0, sizeof *v);
+    if (nl >= (int)sizeof nm) return;
+    memcpy(nm, name, nl); nm[nl] = 0;
+    if (sub && sl == 1 && (sub[0] == '@' || sub[0] == '*')) {        /* ${a[@]} ${!a[@]} */
+        AEnt *x;
+        v->list = 1; v->star = sub[0] == '*';
+        if ((a = arr_find(nm))) {
+            for (x = a->head; x; x = x->next) {
+                char b[24];
+                if (keys) { if (a->assoc) vadd(e, v, x->key, strlen(x->key)); else vadd(e, v, b, ltoa_(x->idx, b)); }
+                else vadd(e, v, x->val, strlen(x->val));
+            }
+        } else {
+            Str s;
+            memset(&s, 0, sizeof s); s.ar = e->ar;
+            if (getparam(e, nm, nl, &s)) { if (keys) vadd(e, v, "0", 1); else vadd(e, v, s.s ? s.s : "", s.n); }
+        }
+        v->set = v->n > 0;
+        return;
+    }
+    if (!sub && nl == 1 && (nm[0] == '@' || nm[0] == '*')) {        /* $@ $* */
+        int i;
+        v->list = 1; v->star = nm[0] == '*';
+        for (i = 0; i < npos; i++) vadd(e, v, pos[i], strlen(pos[i]));
+        v->set = 1;
+        return;
+    }
+    if (sub) {
+        char *key = subexp(e, sub, sl, 0), buf[LINE_MAX];
+        int l = elem_get(nm, key, buf, sizeof buf);
+        if (l >= 0) { vadd(e, v, buf, l); v->set = 1; }
+        return;
+    }
+    {
+        Str s;
+        memset(&s, 0, sizeof s); s.ar = e->ar;
+        if ((v->set = getparam(e, nm, nl, &s))) vadd(e, v, s.s ? s.s : "", s.n);
+    }
+}
+
+static int uc(int c)
+{
+    c &= 0xff;
+    if ((c >= 'a' && c <= 'z') || (c >= 0xe0 && c <= 0xfe && c != 0xf7)) c -= 32;
+    return c;
+}
+
+/* ${x/pat/rep} ${x//...} ${x/#...} ${x/%...} on one value */
+static char *replace(Exp *e, char *v, const char *pat, const char *rep, char how)
+{
+    Str o;
+    int len = strlen(v), k = 0, m, done = 0;
+    memset(&o, 0, sizeof o); o.ar = e->ar;
+    sput(&o, "", 0);
+    if (!*pat) return v;
+    while (k <= len) {
+        int hit = -1;
+        if (!done && (how != '#' || k == 0)) {
+            for (m = len - k; m >= 0; m--) {           /* the longest match here */
+                char c = v[k + m];
+                if (how == '%' && k + m != len) continue;
+                v[k + m] = 0;
+                if (gmatch(pat, v + k, 0)) hit = m;
+                v[k + m] = c;
+                if (hit >= 0) break;
+            }
+        }
+        if (hit >= 0 && (hit > 0 || how == '#' || how == '%')) {
+            sput(&o, rep, strlen(rep));
+            k += hit;
+            if (how != '/') done = 1;
+            if (hit == 0) { if (k < len) sputc(&o, v[k]); k++; }
+            continue;
+        }
+        if (k < len) sputc(&o, v[k]);
+        k++;
+    }
+    return o.s;
+}
+
 /* ${...}: the inside, without the braces */
 static void brace(Exp *e, const char *s, int n, int inquotes)
 {
-    Str val, w;
-    int i = 0, set, len = 0;
-    memset(&val, 0, sizeof val); val.ar = e->ar;
-    memset(&w, 0, sizeof w); w.ar = e->ar;
-    if (n > 1 && s[0] == '#') {       /* ${#name} */
+    int i = 0, length = 0, indirect = 0, nl, sl = 0, k;
+    const char *name, *sub = NULL;
+    Vals v;
+    if (n > 1 && s[0] == '#' && s[1] != ':' && !(n > 2 && strchr("-=+?#%", s[1]) && s[1] != '#')) { length = 1; i = 1; }
+    else if (n > 1 && s[0] == '!') { indirect = 1; i = 1; }
+    name = s + i;
+    if (i < n && wordch(s[i])) while (i < n && wordch(s[i])) i++;
+    else if (i < n && strchr("?#$@*-!0", s[i])) i++;
+    nl = s + i - name;
+    if (!nl) goto bad;
+    if (i < n && s[i] == '[') {
+        int d = 0, j;
+        for (j = i; j < n; j++) { if (s[j] == '[') d++; else if (s[j] == ']' && --d == 0) break; }
+        if (j >= n) goto bad;
+        sub = s + i + 1; sl = j - i - 1;
+        i = j + 1;
+    }
+    if (indirect && !(sub && sl == 1 && (sub[0] == '@' || sub[0] == '*'))) {
+        /* ${!ref}: the value of the variable whose name ref holds (a[1] too) */
+        Vals r;
+        char *t, *br;
+        getvals(e, name, nl, sub, sl, 0, &r);
+        if (!r.set || !r.n) { if (sh_opt_u) { sh_error("unbound variable:", "${!...}"); aborted = 1; } return; }
+        t = r.v[0];
+        br = strchr(t, '[');
+        if (br && t[strlen(t) - 1] == ']') getvals(e, t, br - t, br + 1, strlen(br + 1) - 1, 0, &v);
+        else getvals(e, t, strlen(t), NULL, 0, 0, &v);
+    } else getvals(e, name, nl, sub, sl, indirect, &v);
+    if (length) {
         char b[24];
-        getparam(e, s + 1, n - 1, &val);
-        addtext(e, b, ltoa_(val.n, b), 1);
+        long c = v.list ? v.n : v.n ? (long)strlen(v.v[0]) : 0;
+        if (i != n) goto bad;
+        if (!v.set && !v.list && sh_opt_u) { sh_error("unbound variable:", name); aborted = 1; return; }
+        addtext(e, b, ltoa_(c, b), 1);
         return;
     }
-    while (i < n && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_')) i++;
-    if (i == 0 && n > 0 && (s[0] == '?' || s[0] == '#' || s[0] == '$' || s[0] == '@' || s[0] == '*')) i = 1;
-    set = getparam(e, s, i, &val);
-    len = val.n;
-    if (i == n) { if (set) addtext(e, val.s ? val.s : "", len, inquotes); return; }
-    {
-        int colon = s[i] == ':';
+    if (i < n) {
+        int colon = s[i] == ':' && i + 1 < n && strchr("-=+?", s[i + 1]);
         char op = s[i + colon];
         const char *word = s + i + colon + 1;
         int wl = n - (i + colon + 1);
-        int empty = !set || (colon && len == 0);
-        Exp sub;
+        int empty = !v.set || (colon && (v.list ? v.n == 0 : (v.n == 0 || !*v.v[0])));
+        Exp sub2;
         if (op == '-' || op == '=' || op == '+' || op == '?') {
             if ((op == '+') ? !empty : empty) {
                 /* the word's own quotes come off: ${u:-'a b'} is a b */
-                memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
-                sub.sqlit = inquotes;
-                expand_into(&sub, word, wl, 0);
+                memset(&sub2, 0, sizeof sub2); sub2.ar = e->ar; sub2.cur.ar = e->ar;
+                sub2.sqlit = inquotes;
+                expand_into(&sub2, word, wl, 0);
                 if (op == '=') {
                     char nm[128];
-                    if (i < (int)sizeof nm) { memcpy(nm, s, i); nm[i] = 0; os_setvar(nm, sub.cur.s ? sub.cur.s : "", V_ASSIGN); }
+                    if (nl < (int)sizeof nm) { memcpy(nm, name, nl); nm[nl] = 0; sh_set(nm, sub2.cur.s ? sub2.cur.s : "", V_ASSIGN); }
                 }
-                if (op == '?') { sh_error(sub.cur.n ? sub.cur.s : "parameter not set", ""); aborted = 1; return; }
-                addtext(e, sub.cur.s ? sub.cur.s : "", sub.cur.n, inquotes || sub.quoted);
-            } else if (op != '+' && set) addtext(e, val.s ? val.s : "", len, inquotes);
-            return;
-        }
-        if (s[i] == '#' || s[i] == '%') {
-            int longest = s[i + 1] == s[i], k;
-            const char *pat = s + i + 1 + longest;
-            char none[1] = { 0 }, *v = val.s ? val.s : none, *p;
-            memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
-            sub.patmode = 1;
-            expand_into(&sub, pat, n - (pat - s), 0);
-            p = sub.cur.s ? sub.cur.s : "";
-            if (s[i] == '#') {
-                for (k = longest ? len : 0; longest ? k >= 0 : k <= len; k += longest ? -1 : 1) {
-                    char c = v[k];
-                    v[k] = 0;
-                    if (gmatch(p, v, 0)) { v[k] = c; addtext(e, v + k, len - k, inquotes); return; }
-                    v[k] = c;
-                }
-            } else {
-                for (k = longest ? 0 : len; longest ? k <= len : k >= 0; k += longest ? 1 : -1)
-                    if (gmatch(p, v + k, 0)) { addtext(e, v, k, inquotes); return; }
+                if (op == '?') { sh_error(sub2.cur.n ? sub2.cur.s : "parameter not set", ""); aborted = 1; return; }
+                addtext(e, sub2.cur.s ? sub2.cur.s : "", sub2.cur.n, inquotes || sub2.quoted);
+                return;
             }
-            addtext(e, v, len, inquotes);
-            return;
+            if (op == '+') return;
+            goto out;
         }
+        if (s[i] == ':') {                     /* ${x:offset} ${x:offset:length} */
+            const char *c2 = memchr(s + i + 1, ':', n - i - 1);
+            int err = 0, haslen = c2 != NULL;
+            long off, ln = 0;
+            char *t = subexp(e, s + i + 1, (c2 ? c2 : s + n) - (s + i + 1), 0);
+            off = arith(t, &err);
+            if (!err && haslen) ln = arith(subexp(e, c2 + 1, s + n - c2 - 1, 0), &err);
+            if (err) { arith_error(err, t); aborted = 1; return; }
+            if (v.list) {
+                /* elements: $@ counts from 1 ($0 at 0), an array from its first */
+                int base = !sub && !indirect ? 1 : 0, total = v.n + base, from, to;
+                Vals w;
+                if (off < 0) off += total;
+                if (off < 0) off = total;
+                from = off; to = haslen ? (ln < 0 ? total + ln : off + ln) : total;
+                if (to > total) to = total;
+                memset(&w, 0, sizeof w); w.list = 1; w.star = v.star; w.set = 1;
+                for (k = from; k < to; k++) {
+                    if (k < base) vadd(e, &w, pos0, strlen(pos0));
+                    else vadd(e, &w, v.v[k - base], strlen(v.v[k - base]));
+                }
+                v = w;
+            } else if (v.n) {
+                long L = strlen(v.v[0]), to;
+                if (off < 0) off += L;
+                if (off < 0 || off > L) off = L;
+                to = haslen ? (ln < 0 ? L + ln : off + ln) : L;
+                if (to > L) to = L;
+                if (to < off) { if (ln < 0) { sh_error("substring expression < 0:", t); aborted = 1; return; } to = off; }
+                v.v[0] = astr(e->ar, v.v[0] + off, to - off);
+            }
+            goto out;
+        }
+        if (op == '#' || op == '%') {
+            int longest = s[i + 1] == op;
+            const char *pat = s + i + 1 + longest;
+            char *p = subexp(e, pat, n - (pat - s), 1);
+            for (k = 0; k < v.n; k++) {
+                char *x = v.v[k];
+                int len = strlen(x), j, hit = -1;
+                if (op == '#') {
+                    for (j = longest ? len : 0; longest ? j >= 0 : j <= len; j += longest ? -1 : 1) {
+                        char c = x[j];
+                        x[j] = 0;
+                        if (gmatch(p, x, 0)) hit = j;
+                        x[j] = c;
+                        if (hit >= 0) break;
+                    }
+                    if (hit >= 0) v.v[k] = x + hit;
+                } else {
+                    for (j = longest ? 0 : len; longest ? j <= len : j >= 0; j += longest ? 1 : -1)
+                        if (gmatch(p, x + j, 0)) { x[j] = 0; break; }
+                }
+            }
+            goto out;
+        }
+        if (op == '/') {
+            char how = '1', *p, *r = "";
+            const char *ps = s + i + 1, *slash;
+            int depth2 = 0;
+            if (*ps == '/' ) { how = '/'; ps++; }
+            else if (*ps == '#') { how = '#'; ps++; }
+            else if (*ps == '%') { how = '%'; ps++; }
+            for (slash = ps; slash < s + n; slash++) {   /* the pattern ends at a / not in ${ } or quotes */
+                if (*slash == '\\') { slash++; continue; }
+                if (*slash == '{') depth2++;
+                else if (*slash == '}') depth2--;
+                else if (*slash == '/' && !depth2) break;
+            }
+            p = subexp(e, ps, (slash < s + n ? slash : s + n) - ps, 1);
+            if (slash < s + n) {
+                Exp sub3;
+                memset(&sub3, 0, sizeof sub3); sub3.ar = e->ar; sub3.cur.ar = e->ar;
+                sub3.sqlit = inquotes;
+                expand_into(&sub3, slash + 1, s + n - slash - 1, 0);
+                r = sub3.cur.s ? sub3.cur.s : "";
+            }
+            for (k = 0; k < v.n; k++) v.v[k] = replace(e, v.v[k], p, r, how);
+            goto out;
+        }
+        if (op == '^' || op == ',') {          /* ${x^} ${x^^} ${x,} ${x,,} */
+            int all = i + 1 < n && s[i + 1] == op;
+            for (k = 0; k < v.n; k++) {
+                char *x = v.v[k];
+                int j;
+                for (j = 0; x[j] && (all || j == 0); j++) x[j] = op == '^' ? uc(x[j]) : lc(x[j]);
+            }
+            goto out;
+        }
+        goto bad;
     }
+out:
+    if (!v.set && sh_opt_u && !(nl == 1 && (*name == '@' || *name == '*'))) {
+        char nm[64];
+        int l = nl < 63 ? nl : 63;
+        memcpy(nm, name, l); nm[l] = 0;
+        sh_error("unbound variable:", nm);
+        aborted = 1;
+        return;
+    }
+    if (v.list && inquotes && !v.star) {      /* "${a[@]}": one word each */
+        for (k = 0; k < v.n; k++) {
+            if (k) endfield(e);
+            sput(&e->cur, v.v[k], strlen(v.v[k]));
+            e->have = 1; e->quoted = 1;
+        }
+        if (!v.n) e->atempty = 1;
+        return;
+    }
+    for (k = 0; k < v.n; k++) {
+        if (k) addtext(e, " ", 1, inquotes);
+        addtext(e, v.v[k], strlen(v.v[k]), inquotes);
+    }
+    if (inquotes && !v.n) e->have = 1;
+    return;
+bad:
     sh_error("bad substitution:", "${...}");
     aborted = 1;
+}
+
+/* $'...': bash's C escapes (\n \t \e \x41 \101 \' \\) */
+static int ansic(Exp *e, const char *s, int n)
+{
+    int i = 2;
+    while (i < n && s[i] != '\'') {
+        char c = s[i];
+        if (c == '\\' && i + 1 < n) {
+            char d = s[++i];
+            int k, v = 0;
+            switch (d) {
+            case 'n': c = '\n'; break; case 't': c = '\t'; break; case 'r': c = '\r'; break;
+            case 'a': c = 7; break; case 'b': c = 8; break; case 'f': c = 12; break; case 'v': c = 11; break;
+            case 'e': case 'E': c = 27; break;
+            case 'x':
+                for (k = 0; k < 2 && i + 1 < n && ((s[i + 1] >= '0' && s[i + 1] <= '9') || ((s[i + 1] | 32) >= 'a' && (s[i + 1] | 32) <= 'f')); k++) {
+                    char h = s[++i];
+                    v = v * 16 + (h <= '9' ? h - '0' : (h | 32) - 'a' + 10);
+                }
+                c = k ? v : 'x';
+                break;
+            default:
+                if (d >= '0' && d <= '7') {
+                    v = d - '0';
+                    for (k = 0; k < 2 && i + 1 < n && s[i + 1] >= '0' && s[i + 1] <= '7'; k++) v = v * 8 + s[++i] - '0';
+                    c = v;
+                } else c = d;               /* \' \" \\ \? */
+            }
+        }
+        qput(e, c);
+        i++;
+    }
+    e->have = 1; e->quoted = 1;
+    return i + 1;
 }
 
 /* $ at s: what it stands for; returns how much of s it took. */
@@ -1193,7 +2178,7 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
             memset(&sub, 0, sizeof sub); sub.ar = e->ar; sub.cur.ar = e->ar;
             expand_into(&sub, s + 3, i - 4 > 0 ? i - 4 : 0, 1);
             v = arith(sub.cur.s ? sub.cur.s : "0", &err);
-            if (err) { sh_error(err == 2 ? "division by zero in" : "bad arithmetic:", sub.cur.s ? sub.cur.s : ""); aborted = 1; }
+            if (err) { arith_error(err, sub.cur.s ? sub.cur.s : ""); aborted = 1; }
             addtext(e, b, ltoa_(v, b), inquotes);
         }
         return i + 1;
@@ -1214,6 +2199,7 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         brace(e, s + 2, i - 2, inquotes);
         return i + 1;
     }
+    if (n >= 2 && !inquotes && s[1] == '\'') return ansic(e, s, n);
     if (n >= 2 && inquotes && s[1] == '@') {             /* "$@": one word each */
         int i;
         for (i = 0; i < npos; i++) {
@@ -1223,10 +2209,11 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         }
         return 2;
     }
-    if (n >= 2 && (s[1] == '?' || s[1] == '#' || s[1] == '$' || s[1] == '*' || s[1] == '@' || (s[1] >= '0' && s[1] <= '9'))) {
+    if (n >= 2 && (s[1] == '?' || s[1] == '#' || s[1] == '$' || s[1] == '*' || s[1] == '@' || s[1] == '-' || (s[1] >= '0' && s[1] <= '9'))) {
         Str v;
         memset(&v, 0, sizeof v); v.ar = e->ar;
         if (getparam(e, s + 1, 1, &v)) addtext(e, v.s ? v.s : "", v.n, inquotes);
+        else if (sh_opt_u && s[1] >= '1' && s[1] <= '9') { char nm[2] = { s[1], 0 }; sh_error("unbound variable: $", nm); aborted = 1; }
         return 2;
     }
     {
@@ -1236,9 +2223,36 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         if (i == 1) { sputc(&e->cur, '$'); e->have = 1; return 1; }   /* a lone $ */
         memset(&v, 0, sizeof v); v.ar = e->ar;
         if (getparam(e, s + 1, i - 1, &v)) addtext(e, v.s ? v.s : "", v.n, inquotes);
-        else if (inquotes) e->have = 1;
+        else {
+            if (sh_opt_u) {
+                char nm[64];
+                int l = i - 1 < 63 ? i - 1 : 63;
+                memcpy(nm, s + 1, l); nm[l] = 0;
+                sh_error("unbound variable:", nm);
+                aborted = 1;
+            }
+            if (inquotes) e->have = 1;
+        }
         return i;
     }
+}
+
+/* <(cmd): the T: files made, deleted when the command is done (run_simple) */
+static char procfiles[4][40];
+static int nproc;
+
+static void procsub(Exp *e, const char *text, int len)
+{
+    char *out = capture2(e->ar, text, len, 0);
+    if (nproc >= 4 || !os_tempfile(out, strlen(out), procfiles[nproc], 40)) { sh_error("cannot make a file for", "<( )"); aborted = 1; return; }
+    sput(&e->cur, procfiles[nproc], strlen(procfiles[nproc]));
+    nproc++;
+    e->have = 1;
+}
+
+static void procdone(void)
+{
+    while (nproc > 0) os_delete(procfiles[--nproc]);
 }
 
 static void expand_into(Exp *e, const char *s, int n, int inquotes)
@@ -1286,7 +2300,10 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
             /* "$@" with no arguments is no word at all */
             if (j - i - 1 == 2 && s[i + 1] == '$' && s[i + 2] == '@' && !npos) { i = j + 1; if (!had) e->have = 0; continue; }
             e->have = 1; e->quoted = 1;
+            e->atempty = 0;
             expand_into(e, s + i + 1, j - i - 1, 1);
+            if (e->atempty && !had && s[i + 1] == '$' && s[i + 2] == '{' && scan_nested(s, n, i + 1) == j) e->have = 0;
+            e->atempty = 0;
             i = j + 1;
             continue;
         }
@@ -1296,7 +2313,15 @@ static void expand_into(Exp *e, const char *s, int n, int inquotes)
             i += 2;
             continue;
         }
-        if (c == '*' || c == '?') e->pattern = 1;
+        if (c == '<' && i + 1 < n && s[i + 1] == '(') {     /* <(cmd): its output in a T: file, the file's name */
+            long end = scan_nested(s, n, i);
+            int j = (end < 0 ? n + 1 : end) - 1;
+            procsub(e, s + i + 2, j - i - 2);
+            i = j + 1;
+            continue;
+        }
+        if (c == '*' || (c == '?' && (i || n > 1))) e->pattern = 1;      /* ? alone is ReadArgs' help */
+        if (c == '[' && memchr(s + i + 1, ']', n - i - 1)) e->pattern = 1;
         sputc(&e->cur, c);
         e->have = 1;
         i++;
@@ -1433,7 +2458,7 @@ static char *expand1(Arena *ar, const char *word, int *quoted)
 static void amigaarg(Str *b, struct shfield *f)
 {
     int i, needq = f->quoted || f->len == 0;
-    if (f->pattern && !f->quoted && !(f->len == 1 && f->s[0] == '*')) {   /* *.txt -> #?.txt; * alone is the console */
+    if (f->pattern && !f->quoted) {             /* a pattern csh did not match: *.txt -> #?.txt */
         for (i = 0; i < f->len; i++) {
             if (f->s[i] == '*') sput(b, "#?", 2);
             else sputc(b, f->s[i]);
@@ -1532,6 +2557,181 @@ static void funcdone(Func *f)
     if (--f->busy == 0 && f->dead) funcfree(f);
 }
 
+/* ---- traps ------------------------------------------------------------------------ */
+
+/* EXIT (the script or csh ends), INT (Ctrl-C: the trap runs instead of the
+ * stop; '' ignores it), ERR (a command failed), RETURN (a function ended).
+ * The Amiga has no other signals: HUP, TERM... are taken and never come. */
+enum { TR_EXIT, TR_INT, TR_ERR, TR_RETURN, TR_COUNT };
+static char *traps[TR_COUNT];
+static int intrap;
+static const char *const trapnames[] = { "EXIT", "INT", "ERR", "RETURN" };
+
+static void runtrap(int k)
+{
+    long orc = rc;
+    int ob = aborted;
+    char *t;
+    if (!traps[k] || !*traps[k] || intrap) return;
+    if (!(t = os_alloc(strlen(traps[k]) + 1))) return;
+    strcpy(t, traps[k]);                 /* the trap may change itself */
+    intrap++;
+    aborted = 0;
+    run_text(t, strlen(t));
+    aborted = ob || aborted;
+    intrap--;
+    os_free(t);
+    setrc(orc);
+}
+
+/* a command failed: the ERR trap, set -e */
+static void failed(long r)
+{
+    if (traps[TR_ERR]) runtrap(TR_ERR);
+    if (sh_opt_e && (sourcing || !os_interactive())) { sh_exiting = 1; sh_exitrc = r; }
+}
+
+static int trapnum(const char *s)
+{
+    static const char *const quiet[] = { "HUP", "QUIT", "TERM", "KILL", "USR1", "USR2", "PIPE", "ALRM", "CHLD", "TSTP", "CONT", "STOP", "WINCH", NULL };
+    int k;
+    if (!strncmp(s, "SIG", 3)) s += 3;
+    if (!strcmp(s, "0")) return TR_EXIT;
+    if (!strcmp(s, "2")) return TR_INT;
+    for (k = 0; k < TR_COUNT; k++) if (veq(trapnames[k], s)) return k;
+    for (k = 0; quiet[k]; k++) if (veq(quiet[k], s)) return TR_COUNT;
+    if (*s >= '1' && *s <= '9') return TR_COUNT;
+    return -1;
+}
+
+long sh_trap(int argc, char **argv)
+{
+    int i = 1, k;
+    long r = 0;
+    if (argc > 1 && !strcmp(argv[1], "--")) i++;
+    if (i >= argc || !strcmp(argv[i], "-p") || !strcmp(argv[i], "-l")) {
+        for (k = 0; k < TR_COUNT; k++) if (traps[k]) {
+            const char *t;
+            sh_print("trap -- '");
+            for (t = traps[k]; *t; t++) { if (*t == '\'') sh_print("'\\''"); else sh_printn(t, 1); }
+            sh_print("' "); sh_print(trapnames[k]); sh_print("\n");
+        }
+        return 0;
+    }
+    {
+        const char *action = argv[i];
+        int reset = !strcmp(action, "-");
+        if (i + 1 >= argc) {            /* trap INT: back to normal */
+            if (trapnum(action) < 0) { sh_error("trap: unknown signal", action); return 10; }
+            reset = 1; i--;
+        }
+        for (i++; i < argc; i++) {
+            if ((k = trapnum(argv[i])) < 0) { sh_error("trap: unknown signal", argv[i]); r = 10; continue; }
+            if (k == TR_COUNT) continue;
+            os_free(traps[k]);
+            traps[k] = NULL;
+            if (!reset && (traps[k] = os_alloc(strlen(action) + 1))) strcpy(traps[k], action);
+        }
+    }
+    return r;
+}
+
+/* The EXIT trap, once (csh or a script ends). */
+void lang_exittrap(void)
+{
+    char *t = traps[TR_EXIT];
+    long orc = rc;
+    if (!t) return;
+    traps[TR_EXIT] = NULL;
+    aborted = 0; sh_exiting = 0; sh_return = sh_break = sh_continue = 0;
+    if (*t) run_text(t, strlen(t));
+    os_free(t);
+    aborted = 0; sh_exiting = 0;
+    setrc(orc);
+}
+
+static void traps_free(void)
+{
+    int k;
+    for (k = 0; k < TR_COUNT; k++) { os_free(traps[k]); traps[k] = NULL; }
+}
+
+/* ---- ( ) and $( ): a subshell without fork ------------------------------------------ */
+
+/* What the commands inside change is put back after them, as if they had
+ * run in a copy of csh: the variables and aliases (the Amiga's local ones),
+ * the current dir, the functions, the arrays, $1..., the options. A
+ * variable exported to ENV: inside stays (that is a file). */
+typedef struct {
+    void *vars;
+    Func **fv;
+    int nf;
+    Arr *arrs;
+    char **pos, *pos0;
+    int npos;
+    Arena posar;
+    int o[5];
+} Snap;
+
+static Arr *arr_copyall(void)
+{
+    Arr *head = NULL, **tail = &head, *a;
+    for (a = arrs; a; a = a->next) {
+        int l = strlen(a->name);
+        Arr *c = os_alloc(sizeof *c + l + 1);
+        AEnt *x, **et;
+        if (!c) break;
+        c->name = (char *)(c + 1);
+        memcpy(c->name, a->name, l);
+        c->assoc = a->assoc; c->n = a->n;
+        et = &c->head;
+        for (x = a->head; x; x = x->next) {
+            AEnt *y = ent_new(x->idx, a->assoc ? x->key : NULL, x->val);
+            if (!y) break;
+            *et = y; et = &y->next;
+        }
+        *tail = c; tail = &c->next;
+    }
+    return head;
+}
+
+static void snap_take(Snap *s)
+{
+    Func *f;
+    int i;
+    memset(s, 0, sizeof *s);
+    s->vars = os_snap();
+    for (f = funcs; f; f = f->next) s->nf++;
+    if (s->nf && !(s->fv = os_alloc(s->nf * sizeof *s->fv))) s->nf = 0;
+    for (f = funcs, i = 0; f && i < s->nf; f = f->next, i++) { s->fv[i] = f; f->busy++; }
+    s->arrs = arrs ? arr_copyall() : NULL;
+    s->pos = pos; s->npos = npos; s->pos0 = pos0; s->posar = posar;
+    posar.head = NULL;
+    s->o[0] = sh_opt_e; s->o[1] = sh_opt_x; s->o[2] = sh_opt_u; s->o[3] = sh_opt_f; s->o[4] = sh_opt_pipefail;
+}
+
+static void snap_give(Snap *s)
+{
+    Func *f, *nx;
+    Arr *a, *an;
+    int i;
+    os_restore(s->vars);
+    for (f = funcs; f; f = nx) {        /* made inside: gone; replaced inside: back */
+        nx = f->next;
+        for (i = 0; i < s->nf && s->fv[i] != f; i++) ;
+        if (i == s->nf) { if (f->busy) f->dead = 1; else funcfree(f); }
+    }
+    funcs = NULL;
+    for (i = s->nf - 1; i >= 0; i--) { f = s->fv[i]; f->next = funcs; funcs = f; f->dead = 0; f->busy--; }
+    os_free(s->fv);
+    for (a = arrs; a; a = an) { an = a->next; arr_drop(a); }
+    arrs = s->arrs;
+    afree(&posar);
+    posar = s->posar; pos = s->pos; npos = s->npos; pos0 = s->pos0;
+    sh_opt_e = s->o[0]; sh_opt_x = s->o[1]; sh_opt_u = s->o[2]; sh_opt_f = s->o[3]; sh_opt_pipefail = s->o[4];
+}
+
+
 static int hasredir(struct cmdline *c) { return c->in[0] || c->out[0] || c->err[0] || c->errtoout; }
 
 static void deffunc(Node *n)
@@ -1555,6 +2755,7 @@ static void deffunc(Node *n)
             if (!now[i]->body && was[i]->body) now[i]->body = astr(&ar, was[i]->body, strlen(was[i]->body));
     }
     nf->name = astr(&ar, n->name, strlen(n->name));
+    nf->src = astr(&ar, n->src, strlen(n->src));
     if (f) {           /* replaced: the old one goes */
         Func **p = &funcs;
         while (*p != f) p = &(*p)->next;
@@ -1624,6 +2825,276 @@ static void giveback(Old *o)
     for (; o; o = o->next) { if (o->val) os_setvar(o->name, o->val, V_LOCAL); else os_unsetvar(o->name, 0); }
 }
 
+/* A field list grown by one (globall's copy). */
+static void fieldadd(Exp *e, struct shfield *f)
+{
+    if (e->nf == e->cap) {
+        int cap = e->cap * 2 + 8;
+        struct shfield *nf = aalloc(e->ar, cap * sizeof *nf);
+        if (!nf) return;
+        if (e->f) memcpy(nf, e->f, e->nf * sizeof *nf);
+        e->f = nf; e->cap = cap;
+    }
+    e->f[e->nf++] = *f;
+}
+
+static void globto(Exp *e, const char *pat);
+
+/* Each unquoted pattern from field from on: the files it matches, in order
+ * (bash), or itself when none does. */
+static void globall(Exp *e, int from)
+{
+    int i, nf = e->nf, any = 0;
+    struct shfield *old = e->f;
+    for (i = from; i < nf; i++) if (old[i].pattern && !old[i].quoted) any = 1;
+    if (!any || sh_opt_f) return;
+    e->f = NULL; e->nf = e->cap = 0;
+    for (i = 0; i < nf; i++) {
+        if (i >= from && old[i].pattern && !old[i].quoted) {
+            int before = e->nf;
+            globto(e, old[i].s);
+            if (e->nf > before) continue;
+        }
+        fieldadd(e, &old[i]);
+    }
+}
+
+/* An Amiga command's line from the fields. * matches files in csh, as in
+ * bash - except for a command whose template takes one name only (Dir,
+ * CD: the pattern goes to it, as the Amiga does, unless it matches one
+ * file), and when the files make the line too long (the program gets the
+ * pattern, as #?, and matches it itself). */
+static int amigaline(Arena *ar, Exp *e, struct cmdline *c)
+{
+    Str a;
+    int i, pass;
+    for (pass = 0; pass < 2; pass++) {
+        Exp g = *e;
+        int globbed = 0;
+        if (pass == 0 && !sh_opt_f) {
+            for (i = 1; i < e->nf; i++) if (e->f[i].pattern && !e->f[i].quoted) globbed = 1;
+            if (globbed && os_globok(e->f[0].s)) globall(&g, 1);
+            else globbed = 0;
+        }
+        memset(&a, 0, sizeof a); a.ar = ar;
+        for (i = 1; i < g.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &g.f[i]); }
+        if (a.n + 2 < (int)sizeof c->args && g.f[0].len < (int)sizeof c->cmd) {
+            memcpy(c->cmd, g.f[0].s, g.f[0].len); c->cmd[g.f[0].len] = 0;
+            if (a.s) memcpy(c->args, a.s, a.n);
+            c->args[a.n] = '\n'; c->args[a.n + 1] = 0;
+            c->arglen = a.n + 1;
+            return 1;
+        }
+        if (!globbed) break;
+    }
+    sh_error("line too long", "");
+    return 0;
+}
+
+/* A subscript or other part of a word, expanded as in quotes. */
+static char *partexp(Arena *ar, const char *s, int n)
+{
+    Exp t;
+    memset(&t, 0, sizeof t); t.ar = ar;
+    return subexp(&t, s, n, 0);
+}
+
+/* a=(x y [5]=z): the list, its words split and matched as a command's */
+static int assignlist(Arena *ar, const char *name, const char *s, int n, int plus)
+{
+    Arr *a = arr_find(name);
+    Lex L;
+    int assoc = a && a->assoc;
+    if (ro_refuse(name)) return 0;
+    if (!plus || !a) {
+        char old[LINE_MAX];
+        int l = plus ? os_getvar(name, old, sizeof old) : -1;
+        if (!(a = arr_make(name, assoc))) return 0;
+        if (l >= 0) arr_put(a, "0", old);
+    }
+    memset(&L, 0, sizeof L); L.src = s; L.n = n; L.ar = ar;
+    for (;;) {
+        Tok t = next(&L);
+        Exp e;
+        int i;
+        if (t.type == T_NL) continue;
+        if (t.type != T_WORD) break;
+        if (t.text[0] == '[') {
+            char *close = strstr(t.text, "]=");
+            if (close) {
+                char *key = partexp(ar, t.text + 1, close - t.text - 1);
+                arr_put(a, key, expand1(ar, close + 2, NULL));
+                continue;
+            }
+        }
+        if (assoc) { sh_error("an associative array needs [key]=value:", t.text); continue; }
+        memset(&e, 0, sizeof e); e.ar = ar;
+        expand(&e, t.text, 1);
+        globall(&e, 0);
+        for (i = 0; i < e.nf; i++) arr_push(a, e.f[i].s);
+    }
+    return 1;
+}
+
+/* name=v, name+=v, name[k]=v, name=(list): 0 when refused (said) */
+static int assign(Arena *ar, const char *w, int how)
+{
+    int eq = isassign(w, strlen(w)), plus = eq > 0 && w[eq - 1] == '+', nl = 0;
+    char name[128], *v;
+    const char *val = w + eq + 1, *br = NULL;
+    while (wordch(w[nl]) && nl < 127) nl++;
+    memcpy(name, w, nl); name[nl] = 0;
+    if (w[nl] == '[') br = w + nl;
+    if (val[0] == '(' && !br && val[strlen(val) - 1] == ')') return assignlist(ar, name, val + 1, strlen(val) - 2, plus);
+    v = expand1(ar, val, NULL);
+    if (aborted) return 0;
+    if (br) {
+        char *key = partexp(ar, br + 1, (w + eq - plus) - br - 2), old[LINE_MAX];
+        int l;
+        if (plus && (l = elem_get(name, key, old, sizeof old)) > 0) {
+            char *j = aalloc(ar, l + strlen(v) + 1);
+            if (j) { strcpy(j, old); strcat(j, v); v = j; }
+        }
+        return elem_set(name, key, v);
+    }
+    if (plus) {
+        char old[LINE_MAX];
+        int l = sh_get(name, old, sizeof old);
+        if (l > 0) {
+            char *j = aalloc(ar, l + strlen(v) + 1);
+            if (j) { strcpy(j, old); strcat(j, v); v = j; }
+        }
+    }
+    return sh_set(name, v, how);
+}
+
+static void decl_quote(const char *v)       /* "..." with \ " $ ` escaped */
+{
+    sh_print("\"");
+    for (; *v; v++) { if (strchr("\\\"$`", *v)) sh_print("\\"); sh_printn(v, 1); }
+    sh_print("\"");
+}
+
+static void decl_print(const char *name)
+{
+    Arr *a = arr_find(name);
+    char v[LINE_MAX];
+    int ro = ro_has(name);
+    if (a) {
+        AEnt *x;
+        sh_print(a->assoc ? (ro ? "declare -rA " : "declare -A ") : (ro ? "declare -ra " : "declare -a "));
+        sh_print(a->name);
+        sh_print("=(");
+        for (x = a->head; x; x = x->next) {
+            char b[24];
+            sh_print("[");
+            if (a->assoc) sh_print(x->key); else { ltoa_(x->idx, b); sh_print(b); }
+            sh_print("]=");
+            decl_quote(x->val);
+            if (x->next) sh_print(" ");
+        }
+        sh_print(")\n");
+        return;
+    }
+    if (os_getvar(name, v, sizeof v) < 0) { sh_error("declare: not found:", name); return; }
+    sh_print(ro ? "declare -r " : "declare -- ");
+    sh_print(name);
+    sh_print("=");
+    decl_quote(v);
+    sh_print("\n");
+}
+
+static void func_print(Func *f)
+{
+    sh_print(f->name);
+    sh_print(" () ");
+    sh_print(f->src ? f->src : "{ ...; }");
+    sh_print("\n");
+}
+
+/* declare/typeset (local in a function), local, readonly: the words are
+ * assignments as they stand (x=$y is not split), arrays made here */
+static long __attribute__((noinline)) decl(Node *n, int kind)
+{
+    Arena ar = { NULL };
+    int i, fa = 0, fA = 0, fr = kind == 2, fx = 0, fp = 0, ff = 0, fF = 0, fg = 0, any = 0, loc;
+    long r = 0;
+    if (kind == 1 && !frame) { sh_error("local:", "only in a function"); return 10; }
+    for (i = 1; i < n->nwords && !aborted; i++) {
+        char *raw = n->words[i];
+        int eq = isassign(raw, strlen(raw));
+        loc = (kind == 1 || (kind == 0 && frame && !fg)) && !fp && !ff && !fF;
+        if (!eq && (raw[0] == '-' || raw[0] == '+') && raw[1]) {
+            const char *o;
+            for (o = raw + 1; *o; o++) switch (*o) {
+            case 'a': fa = 1; break;
+            case 'A': fA = 1; break;
+            case 'r': fr = 1; break;
+            case 'x': fx = 1; break;
+            case 'p': fp = 1; break;
+            case 'f': ff = 1; break;
+            case 'F': fF = 1; break;
+            case 'g': fg = 1; break;
+            case 'i': case 'l': case 'u': case 't': case 'n': break;     /* taken, not kept */
+            default: { char b[3] = { '-', *o, 0 }; sh_error("declare: unknown option", b); afree(&ar); return 10; }
+            }
+            continue;
+        }
+        any = 1;
+        if (eq) {
+            char name[128];
+            int nl = 0;
+            while (wordch(raw[nl]) && nl < 127) nl++;
+            memcpy(name, raw, nl); name[nl] = 0;
+            if (ro_refuse(name)) { r = 1; continue; }
+            if (loc) sh_local(name, NULL);
+            if (fA && !arr_find(name)) arr_make(name, 1);
+            else if (fa && !arr_find(name)) arr_make(name, 0);
+            if (!assign(&ar, raw, fx ? V_EXPORT : loc ? V_LOCAL : V_ASSIGN)) r = 1;
+            if (fr) sh_readonly(name);
+        } else {
+            Exp e;
+            int k;
+            memset(&e, 0, sizeof e); e.ar = &ar;
+            expand(&e, raw, 1);
+            for (k = 0; k < e.nf; k++) {
+                char *name = e.f[k].s, v[LINE_MAX];
+                if (fp) { decl_print(name); continue; }
+                if (ff || fF) {
+                    Func *f = findfunc(name);
+                    if (!f) { r = 1; continue; }
+                    if (fF) { sh_print(name); sh_print("\n"); } else func_print(f);
+                    continue;
+                }
+                if (loc) sh_local(name, NULL);
+                if (fA && !arr_find(name)) arr_make(name, 1);
+                else if (fa && !arr_find(name)) arr_make(name, 0);
+                if (fx) { int l = os_getvar(name, v, sizeof v); if (l >= 0) os_setvar(name, v, V_EXPORT); }
+                if (fr) sh_readonly(name);
+            }
+        }
+    }
+    if (!any) {                 /* declare -p, -f, -F, readonly alone: list */
+        if (ff || fF) { Func *f; for (f = funcs; f; f = f->next) { if (fF) { sh_print(f->name); sh_print("\n"); } else func_print(f); } }
+        else {
+            Arr *a;
+            RO *o;
+            for (a = arrs; a; a = a->next) decl_print(a->name);
+            for (o = ros; o; o = o->next) if (!arr_find(o->name)) decl_print(o->name);
+        }
+    }
+    afree(&ar);
+    return r;
+}
+
+static int declkind(const char *w)
+{
+    if (veq(w, "declare") || veq(w, "typeset")) return 0;
+    if (veq(w, "local")) return 1;
+    if (veq(w, "readonly")) return 2;
+    return -1;
+}
+
 static long __attribute__((noinline)) run_simple(Node *n)
 {
     static char ab[LINE_MAX];   /* an alias's text: used up before anything runs */
@@ -1631,38 +3102,36 @@ static long __attribute__((noinline)) run_simple(Node *n)
     Exp e;
     struct cmdline *c;
     char tmp[4][40];
-    int ntmp = 0, i, b, caps;
+    int ntmp = 0, i, b, caps, k;
     Old *old = NULL;
     long r = 0;
 
     memset(&e, 0, sizeof e);
     e.ar = &ar;
+    if (n->nwords && (k = declkind(n->words[0])) >= 0 && !findfunc(n->words[0]) && os_getalias(n->words[0], ab, sizeof ab) < 0) {
+        void *s = NULL;
+        if (n->redirs && (!(c = aalloc(&ar, sizeof *c)) || !redirs(&ar, n->redirs, c, tmp, &ntmp) || (hasredir(c) && !(s = os_redir(c))))) { r = 20; goto done; }
+        r = decl(n, k);
+        if (s) os_unredir(s);
+        goto done;
+    }
     for (i = 0; i < n->nwords && !aborted; i++) expand(&e, n->words[i], 1);
-    if (aborted) { afree(&ar); return 1; }
+    if (aborted) { procdone(); afree(&ar); return 1; }
 
     /* name=value alone: set; before a command: only for it */
     caps = capcount;
     for (i = 0; i < n->nassigns && !aborted; i++) {
-        char *eq = strchr(n->assigns[i], '='), *name, *v;
-        int nl = eq - n->assigns[i];
-        name = astr(&ar, n->assigns[i], nl);
-        v = expand1(&ar, eq + 1, NULL);
-        if (!name || !v) { r = 20; goto done0; }
+        char *w = n->assigns[i], name[128];
+        int nl = 0;
+        while (wordch(w[nl]) && nl < 127) nl++;
+        memcpy(name, w, nl); name[nl] = 0;
         if (e.nf) old = putaside(&ar, old, name);
-        os_setvar(name, v, e.nf ? V_LOCAL : V_ASSIGN);   /* X=1 cmd: only for cmd */
+        if (!assign(&ar, w, e.nf ? V_LOCAL : V_ASSIGN)) { r = 1; goto done0; }   /* X=1 cmd: only for cmd */
     }
     if (aborted) { r = 1; goto done0; }
     if (!(c = aalloc(&ar, sizeof *c))) { r = 20; goto done0; }
     if (!redirs(&ar, n->redirs, c, tmp, &ntmp)) { r = 20; goto done; }
 
-    if (sh_opt_x && e.nf) {
-        Str t;
-        memset(&t, 0, sizeof t); t.ar = &ar;
-        sputc(&t, '+');
-        for (i = 0; i < e.nf; i++) { sputc(&t, ' '); sput(&t, e.f[i].s, e.f[i].len); }
-        sputc(&t, '\n');
-        os_err(t.s, t.n);
-    }
     if (!e.nf) {
         /* only redirections: the files are made (or read), nothing runs */
         void *s = NULL;
@@ -1676,9 +3145,6 @@ static long __attribute__((noinline)) run_simple(Node *n)
     {
         char *name = e.f[0].s, **argv;
         Func *f;
-        argv = aalloc(&ar, (e.nf + 1) * sizeof *argv);
-        if (!argv) { r = 20; goto done; }
-        for (i = 0; i < e.nf; i++) argv[i] = e.f[i].s;
 
         /* an alias (the ROM's Alias, or alias x=...): its text, the rest after it */
         if (!e.f[0].quoted && naliasing < 8 && !inalias(name) && os_getalias(name, ab, sizeof ab) >= 0) {
@@ -1696,7 +3162,21 @@ static long __attribute__((noinline)) run_simple(Node *n)
             if (s) os_unredir(s);
             goto done;
         }
-        if ((f = findfunc(name))) {
+        f = findfunc(name);
+        b = f ? -1 : builtin_find(name);
+        if (sh_opt_x || f || b >= 0) globall(&e, 1);      /* csh's own see the files (an Amiga command: amigaline) */
+        if (sh_opt_x) {
+            Str t;
+            memset(&t, 0, sizeof t); t.ar = &ar;
+            sputc(&t, '+');
+            for (i = 0; i < e.nf; i++) { sputc(&t, ' '); sput(&t, e.f[i].s, e.f[i].len); }
+            sputc(&t, '\n');
+            os_err(t.s, t.n);
+        }
+        argv = aalloc(&ar, (e.nf + 1) * sizeof *argv);
+        if (!argv) { r = 20; goto done; }
+        for (i = 0; i < e.nf; i++) argv[i] = e.f[i].s;
+        if (f) {
             char **opos = pos, *opos0 = pos0;
             int onpos = npos;
             Arena oposar = posar;
@@ -1711,19 +3191,20 @@ static long __attribute__((noinline)) run_simple(Node *n)
                 Saved *mine = NULL, **outer = frame;
                 frame = &mine;
                 r = exec(f->body);
+                if (sh_return) { sh_return = 0; r = rc; }
+                runtrap(TR_RETURN);
                 frame = outer;
                 unframe(mine);
             }
             funcdone(f);
             depth--;
-            if (sh_return) { sh_return = 0; r = rc; }
             afree(&posar);
             posar = oposar;
             pos = opos; npos = onpos; pos0 = opos0;
             if (s) os_unredir(s);
             goto done;
         }
-        if ((b = builtin_find(name)) >= 0) {
+        if (b >= 0) {
             void *s = NULL;
             if (hasredir(c) && !(s = os_redir(c))) { r = 20; goto done; }
             r = builtin_run(b, e.nf, argv);
@@ -1731,21 +3212,21 @@ static long __attribute__((noinline)) run_simple(Node *n)
             if (r != -999) goto done;
         }
         /* an Amiga command */
+        if (!amigaline(&ar, &e, c)) { r = 10; goto done; }
         {
-            Str a;
-            memset(&a, 0, sizeof a); a.ar = &ar;
-            for (i = 1; i < e.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &e.f[i]); }
-            if (a.n + 2 >= (int)sizeof c->args || e.f[0].len >= (int)sizeof c->cmd) { sh_error("line too long", ""); r = 10; goto done; }
-            memcpy(c->cmd, e.f[0].s, e.f[0].len); c->cmd[e.f[0].len] = 0;
-            if (a.s) memcpy(c->args, a.s, a.n);
-            c->args[a.n] = '\n'; c->args[a.n + 1] = 0;
-            c->arglen = a.n + 1;
+            char before[256];
+            int had = os_pwd(before, sizeof before);
             r = os_run(c);
+            if (had) {          /* CD, a drawer typed alone: cd - comes back */
+                char now[256];
+                if (os_pwd(now, sizeof now) && strcmp(now, before)) os_setvar("OLDPWD", before, V_LOCAL);
+            }
         }
     }
 done:
     for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
 done0:
+    procdone();
     giveback(old);
     afree(&ar);
     return r;
@@ -1806,7 +3287,10 @@ static long cond(Node *n)
 
 static int stopping(void)
 {
-    if (!aborted && os_break()) { os_err("***Break\n", 8); aborted = 1; }
+    if (!aborted && os_break()) {
+        if (traps[TR_INT]) runtrap(TR_INT);             /* '' : ignored */
+        else { os_err("***Break\n", 8); aborted = 1; }
+    }
     return aborted || sh_exiting || sh_return || sh_break || sh_continue;
 }
 
@@ -1837,12 +3321,13 @@ static void nodetext(Node *n, Str *b)
 }
 
 /* The stages of a pipe in order; -1 when there are more than max. */
-static int flatten(Node *n, Node **st, int max)
+static int flatten(Node *n, Node **st, int *errto, int max)
 {
     int k;
     if (n->type != N_PIPE) { st[0] = n; return 1; }
-    k = flatten(n->a, st, max);
+    k = flatten(n->a, st, errto, max);
     if (k < 0 || k >= max) return -1;
+    errto[k - 1] = n->haslist;          /* |& */
     st[k++] = n->b;
     return k;
 }
@@ -1863,101 +3348,214 @@ static int internal(Arena *ar, Node *n)
 }
 
 /* An Amiga command's stage: its words and redirections as a cmdline. */
-static int stagecmd(Arena *ar, Node *n, struct cmdline *c, void *job)
+/* (its here-documents' T: files into tmp, *ntmp: the job deletes them) */
+static int stagecmd(Arena *ar, Node *n, struct cmdline *c, char (*tmp)[40], int *ntmp)
 {
     Exp e;
-    Str a;
-    char tmp[4][40];
-    int ntmp = 0, i;
+    int i;
     memset(&e, 0, sizeof e); e.ar = ar;
     for (i = 0; i < n->nwords && !aborted; i++) expand(&e, n->words[i], 1);
     if (aborted || !e.nf) return 0;
-    i = redirs(ar, n->redirs, c, tmp, &ntmp);
-    { int k; for (k = 0; k < ntmp; k++) os_job_tmp(job, tmp[k]); }   /* made before one failed too */
-    if (!i) return 0;
-    memset(&a, 0, sizeof a); a.ar = ar;
-    for (i = 1; i < e.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &e.f[i]); }
-    if (a.n + 2 >= (int)sizeof c->args || e.f[0].len >= (int)sizeof c->cmd) { sh_error("line too long", ""); return 0; }
-    memcpy(c->cmd, e.f[0].s, e.f[0].len); c->cmd[e.f[0].len] = 0;
-    if (a.s) memcpy(c->args, a.s, a.n);
-    c->args[a.n] = '\n'; c->args[a.n + 1] = 0;
-    c->arglen = a.n + 1;
+    if (!redirs(ar, n->redirs, c, tmp, ntmp)) return 0;
+    return amigaline(ar, &e, c);
+}
+
+/* A word in '...' for csh's own parser (the state handed to a csh of its own) */
+static void shq(Str *b, const char *s)
+{
+    sputc(b, '\'');
+    for (; *s; s++) { if (*s == '\'') sput(b, "'\\''", 4); else sputc(b, *s); }
+    sputc(b, '\'');
+}
+
+/* csh's own stage in a process of its own (& or the middle of a pipe): a
+ * second csh runs it, from a T: script that brings what the Amiga does not
+ * copy - the functions, arrays, $1..., the options. The local variables and
+ * aliases come with the process (NP_Cli copies them), so it is bash's
+ * subshell: what it changes stays there. */
+static int ownstage(Arena *ar, Node *n, struct cmdline *c, void *job)
+{
+    Str t;
+    Func *f;
+    Arr *a;
+    int i;
+    char name[40];
+    const char *self = os_self();
+    if (strlen(self) >= sizeof c->cmd || !os_exists(self)) { sh_error("csh's own command in a process of its own needs C:csh:", n->src ? n->src : ""); return 0; }
+    memset(&t, 0, sizeof t); t.ar = ar;
+    sput(&t, "#!csh\n", 6);
+    if (sh_opt_e) sput(&t, "set -e\n", 7);
+    if (sh_opt_u) sput(&t, "set -u\n", 7);
+    if (sh_opt_f) sput(&t, "set -f\n", 7);
+    if (sh_opt_pipefail) sput(&t, "set -o pipefail\n", 16);
+    for (f = funcs; f; f = f->next) {
+        sput(&t, f->name, strlen(f->name));
+        sput(&t, " () ", 4);
+        sput(&t, f->src, strlen(f->src));
+        sputc(&t, '\n');
+    }
+    for (a = arrs; a; a = a->next) {
+        AEnt *x;
+        if (veq(a->name, "PIPESTATUS") || veq(a->name, "BASH_REMATCH")) continue;
+        if (a->assoc) sput(&t, "declare -A ", 11);
+        sput(&t, a->name, strlen(a->name));
+        sput(&t, "=(", 2);
+        for (x = a->head; x; x = x->next) {
+            char b[24];
+            sputc(&t, '[');
+            if (a->assoc) shq(&t, x->key); else sput(&t, b, ltoa_(x->idx, b));
+            sput(&t, "]=", 2);
+            shq(&t, x->val);
+            sputc(&t, ' ');
+        }
+        sput(&t, ")\n", 2);
+    }
+    sput(&t, "set --", 6);
+    for (i = 0; i < npos; i++) { sputc(&t, ' '); shq(&t, pos[i]); }
+    sputc(&t, '\n');
+    if (n->src) sput(&t, n->src, strlen(n->src));
+    sputc(&t, '\n');
+    if (!os_tempfile(t.s, t.n, name, sizeof name)) { sh_error("cannot write the script for", n->src ? n->src : ""); return 0; }
+    os_job_tmp(job, name);
+    strcpy(c->cmd, self);
+    strcpy(c->args, "FROM ");
+    strcat(c->args, name);
+    strcat(c->args, "\n");
+    c->arglen = strlen(c->args);
     return 1;
 }
 
+/* A stage that is one of csh's own commands with nothing that could go on
+ * for ever (echo, printf...): in the middle of a pipe it writes a T: file. */
+static int quickstage(Arena *ar, Node *n)
+{
+    int q;
+    char *w;
+    if (n->type != N_SIMPLE || !n->nwords) return 0;
+    if (strchr(n->words[0], '`') || strstr(n->words[0], "$(")) return 1;
+    w = expand1(ar, n->words[0], &q);
+    return !findfunc(w) && builtin_find(w) >= 0;
+}
+
 /* a | b | c, and anything with &: an Amiga command runs in a process of
- * its own, joined to the next by PIPE:; csh's own stage runs in csh (the
- * last one reading the pipe as it comes, one in the middle into a T: file
- * the next one reads). The rc is the last stage's. */
+ * its own, joined to the next by PIPE:; csh's own stage runs in csh when it
+ * is the last (as zsh: a | read x sets x), in the middle a T: file when it
+ * is a quick built-in, else a csh of its own (ownstage). The rc is the last
+ * stage's (set -o pipefail: the last that failed); PIPESTATUS gets each. */
 static long __attribute__((noinline)) pipeline(Node *n, int bg)
 {
     Arena ar = { NULL };
     Node *st[32];
+    int errto[32], fromjob[32], own[32];
+    long src[32], jobrcs[32];
+    struct cmdline *cs[32];
+    void *pre[32];
+    char (*tmp)[40];
     Str text;
     void *job;
     long in, r = 0;
-    int ns, i, lastint = 0;
+    int ns, i, lastint = 0, njob = 0, ntmp = 0;
     memset(&text, 0, sizeof text); text.ar = &ar;
-    if ((ns = flatten(n, st, 32)) < 0) { sh_error("a pipe of more than 32 commands", ""); afree(&ar); setrc(10); return 10; }
-    /* every Amiga command after the first looked for before any starts: one
-     * missing, none starts (the ROM Shell's rule). A stage writing into it
-     * would wait for ever on a pipe nobody reads (3.2's PIPE: has no SIGPIPE).
-     * A missing first one is bash's case: the others run, reading nothing. */
-    for (i = 1; i < ns; i++) {
-        char *w;
-        int q;
-        if (internal(&ar, st[i]) || !st[i]->nwords) continue;
-        w = expand1(&ar, st[i]->words[0], &q);
-        if (*w && !os_exists(w)) {
-            os_err(w, strlen(w)); os_err(": Unknown command\n", 18);
+    memset(errto, 0, sizeof errto);
+    memset(fromjob, 0, sizeof fromjob);
+    memset(pre, 0, sizeof pre);
+    if ((ns = flatten(n, st, errto, 32)) < 0) { sh_error("a pipe of more than 32 commands", ""); afree(&ar); setrc(10); return 10; }
+    if (!(tmp = aalloc(&ar, 4 * 32 * sizeof *tmp))) { afree(&ar); return 20; }
+    /* the Amiga commands' words first, then each found and loaded once.
+     * One after the first missing: none starts (the ROM Shell's rule; a
+     * stage writing into it would wait for ever on a pipe nobody reads -
+     * 3.2's PIPE: has no SIGPIPE). A missing first one is bash's case: the
+     * others run, reading nothing. */
+    for (i = 0; i < ns && !aborted; i++) {
+        own[i] = internal(&ar, st[i]);
+        cs[i] = NULL;
+        if (!own[i] && (cs[i] = aalloc(&ar, sizeof *cs[i])) && !stagecmd(&ar, st[i], cs[i], tmp + ntmp, &ntmp)) cs[i] = NULL;
+        if (ntmp > 4 * 31) break;
+    }
+    for (i = ns - 1; i >= 0 && !aborted; i--) {
+        if (!cs[i]) continue;
+        if (!(pre[i] = os_prepare(cs[i])) && i) {
+            int k;
+            for (k = 0; k < ns; k++) if (pre[k]) os_unprepare(pre[k]);
+            for (k = 0; k < ntmp; k++) os_delete(tmp[k]);
             afree(&ar); setrc(10); return 10;
         }
+        if (!pre[i]) cs[i] = NULL;                  /* the first: said, its rc 10 */
     }
     nodetext(n, &text);
-    if (!(job = os_job_new(text.s ? text.s : "", bg))) { afree(&ar); return 20; }
+    if (aborted || !(job = os_job_new(text.s ? text.s : "", bg))) {
+        for (i = 0; i < ns; i++) if (pre[i]) os_unprepare(pre[i]);
+        for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
+        afree(&ar);
+        return aborted ? 1 : 20;
+    }
+    for (i = 0; i < ntmp; i++) os_job_tmp(job, tmp[i]);
     in = os_job_in(job);
     for (i = 0; i < ns && !aborted; i++) {
         int last = i == ns - 1;
-        if (internal(&ar, st[i])) {
+        src[i] = 0;
+        if (own[i] && !bg && last) {
+            void *s = os_select(in, 0);
+            r = src[i] = exec(st[i]);
+            os_unselect(s);
+            os_close(job, in);
+            lastint = 1;
+        } else if (own[i] && !bg && quickstage(&ar, st[i])) {
+            long out = os_tempout(job);
             void *s;
-            if (bg) { sh_error("csh's own commands cannot run with & (yet):", text.s); os_close(job, in); r = 10; break; }
-            if (last) {
-                s = os_select(in, 0);
-                r = exec(st[i]);
-                os_unselect(s);
-                os_close(job, in);
-                lastint = 1;
-            } else {
-                long out = os_tempout(job);
-                if (!out) { os_close(job, in); r = 20; break; }
-                s = os_select(in, out);
-                exec(st[i]);
-                os_unselect(s);
-                os_close(job, out);
-                os_close(job, in);
-                in = os_tempin(job);
-            }
+            Snap snap;
+            if (!out) { os_close(job, in); r = 20; break; }
+            s = os_select(in, out);
+            snap_take(&snap);
+            src[i] = exec(st[i]);
+            snap_give(&snap);
+            os_unselect(s);
+            os_close(job, out);
+            os_close(job, in);
+            in = os_tempin(job);
         } else {
-            struct cmdline *c = aalloc(&ar, sizeof *c);
+            struct cmdline *c = cs[i];
             long out, next = 0;
+            if (own[i] && (!(c = aalloc(&ar, sizeof *c)) || !ownstage(&ar, st[i], c, job))) c = NULL;
             /* a stage that cannot start: the next one reads nothing (in 0 = NIL:) */
-            if (!c || !stagecmd(&ar, st[i], c, job)) { os_close(job, in); in = 0; r = 10; if (last) break; continue; }
+            if (!c) {
+                os_close(job, in); in = 0; r = src[i] = 10;
+                if (last) break;
+                continue;
+            }
+            if (errto[i]) c->errtoout = 1;
             if (sh_opt_x) {
                 os_err("+ ", 2); os_err(c->cmd, strlen(c->cmd)); os_err(" ", 1);
                 os_err(c->args, c->arglen);
             }
-            if (last && !bg) {          /* in csh itself, as the ROM Shell does */
-                r = os_lastrun(job, c, in);
+            if (last && !bg && !own[i]) {   /* in csh itself, as the ROM Shell does */
+                r = src[i] = os_lastrun(job, c, in, pre[i]);
+                pre[i] = NULL;
                 lastint = 1;
                 break;
             }
             if (last) out = os_job_out(job);
             else if (!os_pipe(job, &next, &out)) { os_close(job, in); r = 20; break; }
-            if (!os_spawn(job, c, in, out)) r = sh_rc();
+            if (!os_spawn(job, c, in, out, pre[i])) r = sh_rc();
+            pre[i] = NULL;
+            fromjob[i] = 1;
             in = next;
         }
     }
-    r = os_job_end(job, r, lastint);
+    for (i = 0; i < ns; i++) if (pre[i]) os_unprepare(pre[i]);   /* a break or Ctrl-C before they ran */
+    r = os_job_end(job, r, lastint, jobrcs, &njob);
+    if (!bg && ns > 1) {
+        Arr *a = arr_fresh("PIPESTATUS");
+        int k = 0;
+        long fail = 0;
+        for (i = 0; i < ns; i++) {
+            char b[24];
+            if (fromjob[i]) src[i] = k < njob ? jobrcs[k++] : 0;
+            if (a) arr_push(a, (ltoa_(src[i], b), b));
+            if (src[i]) fail = src[i];
+        }
+        if (sh_opt_pipefail) r = fail;
+    }
     afree(&ar);
     setrc(r);
     return r;
@@ -2044,6 +3642,260 @@ static long __attribute__((noinline)) exec_case(Node *n)
     return r;
 }
 
+/* (( )), for (( )), let: the text expanded as in double quotes, then arithmetic */
+static long arith_text(const char *s, int *err)
+{
+    Arena ar = { NULL };
+    Exp sub;
+    long v;
+    memset(&sub, 0, sizeof sub); sub.ar = &ar; sub.cur.ar = &ar;
+    expand_into(&sub, s, strlen(s), 1);
+    v = arith(sub.cur.s ? sub.cur.s : "", err);
+    if (*err) arith_error(*err, sub.cur.s ? sub.cur.s : "");
+    afree(&ar);
+    return v;
+}
+
+long sh_let(int argc, char **argv)
+{
+    long v = 0;
+    int i, err = 0;
+    if (argc < 2) { sh_error("let:", "an expression is needed"); return 10; }
+    for (i = 1; i < argc && !err; i++) v = arith_text(argv[i], &err);
+    return err ? SH_FALSE : v ? 0 : SH_FALSE;
+}
+
+static long __attribute__((noinline)) exec_cfor(Node *n)
+{
+    long r = 0;
+    int err = 0;
+    if (*n->words[0]) arith_text(n->words[0], &err);
+    if (err) { setrc(SH_FALSE); return SH_FALSE; }
+    sh_loops++;
+    for (;;) {
+        if (n->words[1][strspn(n->words[1], " \t\n")]) {
+            long c = arith_text(n->words[1], &err);
+            if (err) { r = SH_FALSE; break; }
+            if (!c) break;
+        }
+        r = loopbody(n->b);
+        if (sh_break) { sh_break--; break; }
+        if (stopping()) break;
+        if (*n->words[2]) { arith_text(n->words[2], &err); if (err) { r = SH_FALSE; break; } }
+    }
+    sh_loops--;
+    setrc(r);
+    return r;
+}
+
+/* select name in words: a numbered menu, PS3 asks, REPLY gets the line */
+static long __attribute__((noinline)) exec_select(Node *n)
+{
+    Arena ar = { NULL };
+    Exp e;
+    int i;
+    long r = 0;
+    char line[LINE_MAX], ps3[128];
+    memset(&e, 0, sizeof e); e.ar = &ar;
+    if (n->haslist) for (i = 0; i < n->nwords && !aborted; i++) expand(&e, n->words[i], 1);
+    else for (i = 0; i < npos; i++) { sput(&e.cur, pos[i], strlen(pos[i])); e.have = 1; endfield(&e); }
+    sh_loops++;
+    for (i = 0; i < e.nf; i++) {
+        char b[24];
+        int l = ltoa_(i + 1, b);
+        os_err(b, l); os_err(") ", 2); os_err(e.f[i].s, e.f[i].len); os_err("\n", 1);
+    }
+    while (!aborted) {
+        int l = sh_get("PS3", ps3, sizeof ps3), k;
+        long num;
+        if (l < 0) { strcpy(ps3, "#? "); l = 3; }
+        os_err(ps3, l);
+        if ((l = os_readline(line, sizeof line)) < 0) { os_err("\n", 1); break; }
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        sh_set("REPLY", line, V_ASSIGN);
+        if (!l) {
+            for (k = 0; k < e.nf; k++) {
+                char b[24];
+                int bl = ltoa_(k + 1, b);
+                os_err(b, bl); os_err(") ", 2); os_err(e.f[k].s, e.f[k].len); os_err("\n", 1);
+            }
+            continue;
+        }
+        for (num = 0, k = 0; line[k] >= '0' && line[k] <= '9'; k++) num = num * 10 + line[k] - '0';
+        sh_set(n->name, !line[k] && num >= 1 && num <= e.nf ? e.f[num - 1].s : "", V_ASSIGN);
+        r = loopbody(n->b);
+        if (sh_break) { sh_break--; break; }
+        if (stopping()) break;
+    }
+    sh_loops--;
+    afree(&ar);
+    setrc(r);
+    return r;
+}
+
+/* ---- [[ ]] ---- */
+
+typedef struct { char **w; int n, i, err, skip; Arena *ar; } Cond;
+
+static int c_or(Cond *c);
+
+static char *cword(Cond *c, const char *w)
+{
+    return c->skip ? "" : expand1(c->ar, w, NULL);
+}
+
+static int c_isbin(const char *op)
+{
+    static const char *const ops[] = { "=", "==", "!=", "=~", "<", ">", "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-nt", "-ot", NULL };
+    int i;
+    for (i = 0; ops[i]; i++) if (!strcmp(op, ops[i])) return 1;
+    return 0;
+}
+
+static int c_binary(Cond *c, const char *lhs, const char *op, const char *rw)
+{
+    if (c->skip) return 0;
+    if (!strcmp(op, "=") || !strcmp(op, "==") || !strcmp(op, "!=")) {
+        Exp pe;
+        int hit;
+        memset(&pe, 0, sizeof pe); pe.ar = c->ar; pe.patmode = 1;
+        expand(&pe, rw, 0);
+        hit = gmatch(pe.nf ? pe.f[0].s : "", lhs, 0);
+        return op[0] == '!' ? !hit : hit;
+    }
+    if (!strcmp(op, "=~")) {
+        Exp re;
+        int caps[2 * RE_GROUPS], ng = 0, r, k;
+        Arr *a;
+        memset(&re, 0, sizeof re); re.ar = c->ar; re.cur.ar = c->ar; re.remode = 1;
+        expand_into(&re, rw, strlen(rw), 0);
+        r = re_match(re.cur.s ? re.cur.s : "", lhs, 0, caps, &ng);
+        if (r < 0) { sh_error("bad regular expression:", re.cur.s ? re.cur.s : ""); c->err = 2; return 0; }
+        if ((a = arr_fresh("BASH_REMATCH")) && r)
+            for (k = 0; k <= ng; k++) {
+                char *t = caps[2 * k] >= 0 && caps[2 * k + 1] >= caps[2 * k] ? astr(c->ar, lhs + caps[2 * k], caps[2 * k + 1] - caps[2 * k]) : "";
+                arr_push(a, t ? t : "");
+            }
+        return r;
+    }
+    {
+        char *rhs = cword(c, rw);
+        if (!strcmp(op, "<")) return strcmp(lhs, rhs) < 0;
+        if (!strcmp(op, ">")) return strcmp(lhs, rhs) > 0;
+        if (!strcmp(op, "-nt") || !strcmp(op, "-ot")) {
+            long a = os_mtime(lhs), b = os_mtime(rhs);
+            return op[1] == 'n' ? a > b : (a >= 0 && a < b) || (a < 0 && b >= 0);
+        }
+        {
+            int e1 = 0, e2 = 0;
+            long x = arith(lhs, &e1), y = arith(rhs, &e2);
+            if (e1 || e2) { arith_error(e1 ? e1 : e2, e1 ? lhs : rhs); c->err = 2; return 0; }
+            if (!strcmp(op, "-eq")) return x == y;
+            if (!strcmp(op, "-ne")) return x != y;
+            if (!strcmp(op, "-lt")) return x < y;
+            if (!strcmp(op, "-le")) return x <= y;
+            if (!strcmp(op, "-gt")) return x > y;
+            return x >= y;
+        }
+    }
+}
+
+static int c_prim(Cond *c)
+{
+    const char *a;
+    if (c->i >= c->n) { c->err = 1; return 0; }
+    a = c->w[c->i];
+    if (!strcmp(a, "!")) { c->i++; return !c_prim(c); }
+    if (!strcmp(a, "(")) {
+        int v;
+        c->i++;
+        v = c_or(c);
+        if (c->i < c->n && !strcmp(c->w[c->i], ")")) c->i++; else c->err = 1;
+        return v;
+    }
+    if (c->i + 2 < c->n + 1 && c->i + 1 < c->n && c_isbin(c->w[c->i + 1])) {
+        const char *op = c->w[c->i + 1];
+        char *lhs;
+        if (c->i + 2 >= c->n) { c->err = 1; return 0; }
+        lhs = cword(c, a);
+        c->i += 3;
+        return c_binary(c, lhs, op, c->w[c->i - 1]);
+    }
+    if (a[0] == '-' && a[1] && !a[2] && c->i + 1 < c->n && strcmp(c->w[c->i + 1], "&&") && strcmp(c->w[c->i + 1], "||") && strcmp(c->w[c->i + 1], ")")) {
+        char *b;
+        c->i += 2;
+        b = cword(c, c->w[c->i - 1]);
+        if (c->skip) return 0;
+        switch (a[1]) {
+        case 'z': return !*b;
+        case 'n': return *b != 0;
+        case 'e': case 'a': return os_test(b, 'e');
+        case 'f': case 'd': case 'r': case 'w': case 'x': case 's': return os_test(b, a[1]);
+        case 'v': {
+            char t[4], *br = strchr(b, '[');
+            if (br && b[strlen(b) - 1] == ']') {
+                char nm[128], *key;
+                int nl = br - b;
+                if (nl >= (int)sizeof nm) return 0;
+                memcpy(nm, b, nl); nm[nl] = 0;
+                key = astr(c->ar, br + 1, strlen(br + 1) - 1);
+                return elem_get(nm, key, t, sizeof t) >= 0;
+            }
+            return sh_get(b, t, sizeof t) >= 0 || sh_isarray(b);
+        }
+        case 'L': case 'h': return 0;          /* soft links: Lock follows them */
+        }
+        sh_error("[[: unknown test", a);
+        c->err = 2;
+        return 0;
+    }
+    c->i++;
+    return *cword(c, a) != 0;
+}
+
+static int c_and(Cond *c)
+{
+    int v = c_prim(c);
+    while (c->i < c->n && !strcmp(c->w[c->i], "&&")) {
+        int w, sk = c->skip;
+        c->i++;
+        if (!v) c->skip = 1;
+        w = c_prim(c);
+        c->skip = sk;
+        v = v && w;
+    }
+    return v;
+}
+
+static int c_or(Cond *c)
+{
+    int v = c_and(c);
+    while (c->i < c->n && !strcmp(c->w[c->i], "||")) {
+        int w, sk = c->skip;
+        c->i++;
+        if (v) c->skip = 1;
+        w = c_and(c);
+        c->skip = sk;
+        v = v || w;
+    }
+    return v;
+}
+
+static long __attribute__((noinline)) exec_cond(Node *n)
+{
+    Arena ar = { NULL };
+    Cond c;
+    int v;
+    memset(&c, 0, sizeof c);
+    c.w = n->words; c.n = n->nwords; c.ar = &ar;
+    v = c_or(&c);
+    if (!c.err && c.i < c.n) c.err = 1;
+    afree(&ar);
+    if (c.err == 1) { sh_error("[[:", "cannot read that"); return 2; }
+    if (c.err || aborted) return 2;
+    return v ? 0 : SH_FALSE;
+}
+
 /* ( ... ) and $( ... ): not a subshell (no fork on the Amiga), but exit,
  * return, break and continue end only it, as they would end bash's
  * subshell; its exit code is its rc. */
@@ -2051,12 +3903,16 @@ static long subshell(Node *n, const char *text, int len)
 {
     int ob = sh_break, oc = sh_continue, oloops = sh_loops;
     long r;
+    Snap snap;
+    snap_take(&snap);
     sh_break = sh_continue = 0;
     sh_loops = 0;
     r = n ? exec(n) : run_text(text, len);
-    if (sh_exiting) { sh_exiting = 0; r = sh_exitrc; setrc(r); }
+    if (sh_exiting) { sh_exiting = 0; r = sh_exitrc; }
     sh_return = 0;
     sh_break = ob; sh_continue = oc; sh_loops = oloops;
+    snap_give(&snap);
+    setrc(r);
     return r;
 }
 
@@ -2071,10 +3927,16 @@ static long exec(Node *n)
     }
     if (n->redirs && n->type != N_SIMPLE) return exec_redirected(n);
     switch (n->type) {
-    case N_SIMPLE:
-        r = run_simple(n);
+    case N_SIMPLE: case N_ARITH: case N_COND:
+        if (n->type == N_SIMPLE) r = run_simple(n);
+        else if (n->type == N_COND) r = exec_cond(n);
+        else {
+            int err = 0;
+            r = arith_text(n->name, &err) ? 0 : SH_FALSE;
+            if (err) r = SH_FALSE;
+        }
         setrc(r);
-        if (r && sh_opt_e && !incond && (sourcing || !os_interactive())) { sh_exiting = 1; sh_exitrc = r; }
+        if (r && !incond) failed(r);
         return r;
     case N_LIST:
         exec(n->a);
@@ -2093,7 +3955,9 @@ static long exec(Node *n)
         setrc(r);
         return r;
     case N_PIPE:
-        return pipeline(n, 0);
+        r = pipeline(n, 0);
+        if (r && !incond) failed(r);
+        return r;
     case N_BG:
         return pipeline(n->a, 1);
     case N_GROUP:
@@ -2123,6 +3987,10 @@ static long exec(Node *n)
         return r;
     case N_FOR:
         return exec_for(n);
+    case N_CFOR:
+        return exec_cfor(n);
+    case N_SELECT:
+        return exec_select(n);
     case N_CASE:
         return exec_case(n);
     case N_FUNC:
@@ -2164,6 +4032,7 @@ long lang_eval(const char *text)
 {
     long r;
     int top = !depth;
+    if (!t0) t0 = os_ticks() | 1;
     if (top) { aborted = 0; sh_break = sh_continue = sh_return = 0; }   /* csh COMMAND, from run.c */
     r = run_text(text, strlen(text));
     if (top) {
@@ -2203,6 +4072,7 @@ int lang_line(const char *line, int interactive)
 {
     long n = strlen(line);
     int ok;
+    if (!t0) t0 = os_ticks() | 1;
     if (pendlen + n + 2 > pendcap) {
         long cap = (pendlen + n + 2) * 2;
         char *p = os_alloc(cap);
@@ -2237,11 +4107,70 @@ void lang_reset(void)
     lang_more = 0;
 }
 
+/* A script run as a command of its own (csh FROM, a #!csh file, csh
+ * COMMAND): its traps are its own, its EXIT trap runs when it ends. */
+long lang_script(const char *path, int argc, char **argv, const char *text)
+{
+    char *saved[TR_COUNT];
+    long r;
+    memcpy(saved, traps, sizeof saved);
+    memset(traps, 0, sizeof traps);
+    r = text ? lang_eval(text) : lang_source(path, argc, argv);
+    lang_exittrap();
+    traps_free();
+    memcpy(traps, saved, sizeof saved);
+    return r;
+}
+
+char *lang_expandstr(const char *s)
+{
+    Arena ar = { NULL };
+    Exp e;
+    char *r;
+    memset(&e, 0, sizeof e); e.ar = &ar; e.cur.ar = &ar;
+    expand_into(&e, s, strlen(s), 1);
+    aborted = 0;
+    if ((r = os_alloc(e.cur.n + 1)) && e.cur.s) memcpy(r, e.cur.s, e.cur.n);
+    afree(&ar);
+    return r;
+}
+
+/* read -a, mapfile: an array from words */
+void sh_setarray(const char *name, int argc, char **argv)
+{
+    Arr *a;
+    int i;
+    if (ro_refuse(name) || !(a = arr_make(name, 0))) return;
+    for (i = 0; i < argc; i++) arr_push(a, argv[i]);
+}
+
+/* unset -f */
+int sh_unsetfunc(const char *name)
+{
+    Func **p;
+    for (p = &funcs; *p; p = &(*p)->next)
+        if (!strcmp((*p)->name, name)) {
+            Func *f = *p;
+            *p = f->next;
+            if (f->busy) f->dead = 1; else funcfree(f);
+            return 1;
+        }
+    return 0;
+}
+
 void lang_end(void)
 {
     Func *f, *n;
+    Arr *a, *an;
+    RO *o, *on;
     for (f = funcs; f; f = n) { n = f->next; if (!f->busy) funcfree(f); }
     funcs = NULL;
+    for (a = arrs; a; a = an) { an = a->next; arr_drop(a); }
+    arrs = NULL;
+    for (o = ros; o; o = on) { on = o->next; os_free(o); }
+    ros = NULL;
+    traps_free();
+    os_free(hookbuf); hookbuf = NULL; hookn = hookcap = 0;
     afree(&posar);
     pos = NULL; npos = 0;
     if (pend) os_free(pend);
@@ -2252,6 +4181,7 @@ void lang_end(void)
 
 long lang_source(const char *path, int argc, char **argv)
 {
+    if (!t0) t0 = os_ticks() | 1;
     long len, r;
     char *text = os_readfile(path, &len), **opos = pos, *opos0 = pos0, *name;
     int onpos = npos, top = !depth;
@@ -2310,7 +4240,7 @@ long lang_runscript(const char *path, struct cmdline *c)
         /* a pipe's last stage: the pipe is its input (job.c's c->inh) */
         void *sel = c->inh && !c->in[0] ? os_select(c->inh, 0) : NULL, *s = NULL;
         if (hasredir(c) && !(s = os_redir(c))) r = 20;
-        else r = lang_source(path, argc, argv);
+        else r = lang_script(path, argc, argv, NULL);
         if (s) os_unredir(s);
         if (sel) os_unselect(sel);
     }

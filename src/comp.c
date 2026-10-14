@@ -511,7 +511,7 @@ static const char *const internaltpl[][2] = {
 };
 
 #define NTPL 40
-static struct { char name[32]; char *words; } tpl[NTPL];   /* words: names, 0-separated, "" ends */
+static struct { char name[32]; char *words; int many; } tpl[NTPL];   /* words: names, 0-separated, "" ends; many: a /M (-1 no template) */
 static int tplnext;
 
 static void tplforget(void)
@@ -595,7 +595,15 @@ static char *tplwords(const char *t)
     return w;
 }
 
-/* The best template in a program file (the longest run of ReadArgs parts). */
+/* A template with a /M: the command takes several names (csh hands it the
+ * files a * matches; else the pattern). */
+static int tplmany(const char *t)
+{
+    for (; *t; t++) if (t[0] == '/' && (t[1] | 32) == 'm') return 1;
+    return 0;
+}
+
+/* The best template in a program file (the longest run of ReadArgs parts), os_alloc'ed. */
 static char *tplfromfile(BPTR lock)
 {
     BPTR fh = OpenFromLock(lock);
@@ -628,7 +636,12 @@ static char *tplfromfile(BPTR lock)
         }
     }
     Close(fh);
-    return bestscore ? tplwords(best) : NULL;
+    if (bestscore) {
+        char *t = os_alloc(strlen(best) + 1);
+        if (t) strcpy(t, best);
+        return t;
+    }
+    return NULL;
 }
 
 /* A command's file: as typed with a drawer, else the current dir, the
@@ -662,25 +675,48 @@ done:
     return l;
 }
 
+static int lastmany;
+
 static const char *cmdwords(const char *name)
 {
-    int i;
+    int i, many = -1;
     BPTR l;
-    char *w = NULL;
-    for (i = 0; i < NTPL; i++) if (tpl[i].words && ieq(tpl[i].name, name, strlen(name) + 1)) return tpl[i].words;
+    char *w = NULL, *raw = NULL;
+    for (i = 0; i < NTPL; i++) if (tpl[i].words && ieq(tpl[i].name, name, strlen(name) + 1)) { lastmany = tpl[i].many; return tpl[i].words; }
     for (i = 0; internaltpl[i][0]; i++)
         if ((int)strlen(internaltpl[i][0]) == (int)strlen(name) && ieq(internaltpl[i][0], name, strlen(name)) && isresident(name, strlen(name)) == -2) {
             w = tplwords(internaltpl[i][1]);
+            many = tplmany(internaltpl[i][1]);
             break;
         }
-    if (!w && (l = cmdfile(name))) w = tplfromfile(l);
+    if (!w && (l = cmdfile(name)) && (raw = tplfromfile(l))) {
+        w = tplwords(raw);
+        many = tplmany(raw);
+        os_free(raw);
+    }
+    lastmany = many;
     if (!w && !(w = os_alloc(2))) return NULL;          /* none: remembered too */
     if (strlen(name) >= sizeof tpl[0].name) { return w; }
     i = tplnext; tplnext = (tplnext + 1) % NTPL;
     if (tpl[i].words) os_free(tpl[i].words);
     strcpy(tpl[i].name, name);
     tpl[i].words = w;
+    tpl[i].many = many;
     return w;
+}
+
+/* 1: the command takes several names, 0: one (Dir, CD), -1: no template seen */
+int comp_takesmany(const char *name)
+{
+    if (strchr(name, ':') || strchr(name, '/') || strlen(name) >= sizeof tpl[0].name) {
+        BPTR l = cmdfile(name);
+        char *raw;
+        int m = -1;
+        if (l && (raw = tplfromfile(l))) { m = tplmany(raw); os_free(raw); }
+        return m;
+    }
+    if (!cmdwords(name)) return -1;
+    return lastmany;
 }
 
 /* The command whose argument the word at ws is (the first word since the

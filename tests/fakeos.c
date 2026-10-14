@@ -204,6 +204,34 @@ int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u)
 
 void os_setrc(long rc) { char b[24]; snprintf(b, sizeof b, "%ld", rc); set("RC", b, 0, 0); }
 
+/* Dir and CD take one name (their templates have no /M) */
+int os_globok(const char *cmd) { return strcasecmp(cmd, "Dir") && strcasecmp(cmd, "CD"); }
+long os_mtime(const char *path) { return !strcmp(path, "a.txt") ? 100 : !strcmp(path, "b.txt") ? 200 : -1; }
+
+/* ( ): the variables (not the exported ones in ENV:) put back */
+struct fsnap { int n; struct { char *name, *val; int alias, global; } v[MAXV]; };
+void *os_snap(void)
+{
+    struct fsnap *s = calloc(1, sizeof *s);
+    int i;
+    for (i = 0; i < nvars; i++) if (!vars[i].global) {
+        s->v[s->n].name = strdup(vars[i].name); s->v[s->n].val = strdup(vars[i].val);
+        s->v[s->n].alias = vars[i].alias; s->v[s->n].global = 0; s->n++;
+    }
+    return s;
+}
+void os_restore(void *p)
+{
+    struct fsnap *s = p;
+    int i;
+    for (i = 0; i < nvars; ) { if (!vars[i].global) del(i); else i++; }
+    for (i = 0; i < s->n; i++) {
+        set(s->v[i].name, s->v[i].val, s->v[i].alias, 0);
+        free(s->v[i].name); free(s->v[i].val);
+    }
+    free(s);
+}
+
 int os_head(const char *path, char *buf, int n)
 {
     FILE *f = fopen(path, "rb");
@@ -254,16 +282,24 @@ static int fakeh = 10;
 void *os_job_new(const char *text, int bg) { char b[300]; snprintf(b, sizeof b, "{job%s %s}", bg ? " &" : "", text); os_write(b, strlen(b)); return (void *)1; }
 long os_job_in(void *j) { (void)j; return 1; }
 long os_job_out(void *j) { (void)j; return 2; }
+const char *os_self(void) { return "csh"; }
 int os_exists(const char *cmd) { return strncmp(cmd, "NoSuch", 6) != 0; }
 int os_pipe(void *j, long *r, long *w) { (void)j; *r = fakeh++; *w = fakeh++; return 1; }
-int os_spawn(void *j, struct cmdline *c, long in, long out)
+void *os_prepare(struct cmdline *c)
 {
+    if (!strncmp(c->cmd, "NoSuch", 6)) { os_write(c->cmd, strlen(c->cmd)); os_write(": Unknown command\n", 18); return NULL; }
+    return (void *)1;
+}
+void os_unprepare(void *p) { (void)p; }
+int os_spawn(void *j, struct cmdline *c, long in, long out, void *prep)
+{
+    (void)prep;
     char b[1200];
     int n = c->arglen;
     (void)j;
     while (n && c->args[n - 1] == '\n') n--;
-    snprintf(b, sizeof b, "[spawn %s|%.*s in=%ld out=%ld%s%s%s%s]", c->cmd, n, c->args, in, out,
-             c->in[0] ? " <" : "", c->in, c->out[0] ? " >" : "", c->out);
+    snprintf(b, sizeof b, "[spawn %s|%.*s in=%ld out=%ld%s%s%s%s%s]", c->cmd, n, c->args, in, out,
+             c->in[0] ? " <" : "", c->in, c->out[0] ? " >" : "", c->out, c->errtoout ? " 2>&1" : "");
     os_write(b, strlen(b));
     return 1;
 }
@@ -274,14 +310,15 @@ long os_tempout(void *j) { (void)j; return ++lasttemp; }
 long os_tempin(void *j) { (void)j; return lasttemp + 100; }
 void os_close(void *j, long h) { char b[32]; (void)j; if (h > 2) { snprintf(b, sizeof b, "{close %ld}", h); os_write(b, strlen(b)); } }
 void os_job_tmp(void *j, const char *name) { (void)j; (void)name; }
-long os_job_end(void *j, long rc, int li) { char b[64]; (void)j; snprintf(b, sizeof b, "{end rc=%ld%s}\n", rc, li ? " own" : ""); os_write(b, strlen(b)); return rc; }
+long os_job_end(void *j, long rc, int li, long *rcs, int *nrcs) { char b[64]; (void)j; (void)rcs; *nrcs = 0; snprintf(b, sizeof b, "{end rc=%ld%s}\n", rc, li ? " own" : ""); os_write(b, strlen(b)); return rc; }
 long job_list(void) { os_write("[jobs]\n", 7); return 0; }
 long job_fg(const char *s) { (void)s; os_write("[fg]\n", 5); return 0; }
 long job_kill(const char *s) { (void)s; os_write("[kill]\n", 7); return 0; }
 long job_waitall(void) { os_write("[wait]\n", 7); return 0; }
 int fake_h_reset(void) { fakeh = 10; lasttemp = 50; hdk = 0; return 0; }
-long os_lastrun(void *j, struct cmdline *c, long in)
+long os_lastrun(void *j, struct cmdline *c, long in, void *prep)
 {
+    (void)prep;
     char b[1200];
     int n = c->arglen;
     (void)j;

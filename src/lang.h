@@ -36,6 +36,12 @@ int os_captured(void *save, char **text);        /* back; *text os_alloc'ed */
 int os_break(void);                              /* Ctrl-C since the last look */
 int os_test(const char *path, int op);           /* -e -f -d -r -w -x -s */
 int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u);
+int os_globok(const char *cmd);                  /* the command takes several names (its template has /M) */
+long os_mtime(const char *path);                 /* a file's date in seconds, -1 = none */
+void *os_snap(void);                             /* ( ): the local variables and current dir ... */
+void os_restore(void *snap);                     /* ... put back as they were */
+long os_ticks(void);                             /* fiftieths of a second */
+int os_pwd(char *buf, int size);                 /* the current dir's name */
 void os_setrc(long rc);
 char *os_readfile(const char *path, long *len);  /* os_alloc'ed, 0-ended */
 int os_head(const char *path, char *buf, int n); /* a file's first n bytes; how many, -1 = none */
@@ -56,16 +62,19 @@ void *os_job_new(const char *text, int bg);
 long os_job_in(void *job);               /* the first stage reads here */
 long os_job_out(void *job);              /* the last stage writes here */
 int os_pipe(void *job, long *readh, long *writeh);
-int os_spawn(void *job, struct cmdline *c, long in, long out);   /* 0 = it could not start (said) */
+void *os_prepare(struct cmdline *c);     /* the command found and loaded, not run; NULL = it cannot be (said) */
+void os_unprepare(void *prep);           /* ... given back unused */
+int os_spawn(void *job, struct cmdline *c, long in, long out, void *prep);   /* prep used up (NULL: found now); 0 = it could not start (said) */
 int os_exists(const char *cmd);          /* a command of that name to run (not loaded) */
-long os_lastrun(void *job, struct cmdline *c, long in);   /* the last Amiga command, run in csh */
+const char *os_self(void);               /* csh's own file, for a csh of its own */
+long os_lastrun(void *job, struct cmdline *c, long in, void *prep);   /* the last Amiga command, run in csh */
 void *os_select(long in, long out);      /* csh's own stage: these streams for a while */
 void os_unselect(void *s);
 long os_tempout(void *job);              /* csh's own stage in the middle writes a T: file ... */
 long os_tempin(void *job);               /* ... the next stage reads it */
 void os_close(void *job, long h);        /* closed unless it is the job's own */
 void os_job_tmp(void *job, const char *name);   /* deleted when the job ends */
-long os_job_end(void *job, long lastrc, int lastinternal);   /* waits (Ctrl-C to each) or goes to the background */
+long os_job_end(void *job, long lastrc, int lastinternal, long *rcs, int *nrcs);   /* waits (Ctrl-C to each) or goes to the background; rcs: each stage's that ran apart */
 long job_list(void);                     /* jobs */
 long job_fg(const char *spec);           /* fg [%n] */
 long job_kill(const char *spec);         /* kill [%n]: Ctrl-C to each stage */
@@ -89,7 +98,25 @@ int sh_getpos(int i, char **s);                  /* positional parameter i (1..)
 int sh_npos(void);
 void sh_setpos(int argc, char **argv);           /* set's / shift's own */
 int sh_local(const char *name, const char *val); /* local: -1 outside a function */
-extern int sh_opt_e, sh_opt_x;
+extern int sh_opt_e, sh_opt_x, sh_opt_u, sh_opt_f, sh_opt_pipefail;
+int sh_get(const char *name, char *buf, int size);          /* a variable, arrays' [0] too; -1 = not set */
+int sh_set(const char *name, const char *val, int how);     /* 0 = refused (read-only, said) */
+int sh_unset(const char *name);                              /* name or name[key] */
+int sh_unsetfunc(const char *name);
+int sh_isarray(const char *name);                            /* 0 no, 1 indexed, 2 associative */
+void sh_setarray(const char *name, int argc, char **argv);
+void sh_readonly(const char *name);
+long sh_trap(int argc, char **argv);
+long sh_let(int argc, char **argv);
+void sh_hook(int on);                                        /* printf -v: output into a string */
+char *sh_hooked(void);                                       /* ... it, os_alloc'ed */
+void lang_exittrap(void);                                    /* csh ends: the EXIT trap */
+long lang_script(const char *path, int argc, char **argv, const char *text);
+int bang_expand(const char *in, char *out, int size, const char *(*back)(int k));   /* bang.c: !! !$ ...; back(1) the last line */
+char *lang_expandstr(const char *s);                         /* a string expanded as in "..." (the prompt), os_alloc'ed */
+extern int sh_opt_histexp;                                   /* set -H / +H */
+#define RE_GROUPS 10
+int re_match(const char *re, const char *s, int nocase, int *caps, int *ngroups);   /* regex.c: 1, 0, -1 bad */
 extern int sh_break, sh_continue, sh_return, sh_exiting;
 extern long sh_exitrc;
 extern int sh_loops;
