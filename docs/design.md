@@ -8,8 +8,9 @@ read or memory is not yet proven on the 3.2 ROM.*
 ## Start here (a later session)
 
 **State at the end of 2026-10-14: csh 0.1b6 INSTALLED on the A1200** (the user asked): C:csh and
-C:cshell 0.1b6 (C:csh-0.1b5.bak kept; cshell is only a file there, not the Shell: that needs
-`Resident shell C:cshell REPLACE`), C:ls 0.2, CTerm 0.3b34 with `shell=csh`. 0.1b6 has bash's missing parts (below);
+C:cshell 0.1b6 (C:csh-0.1b5.bak kept); **cshell is the Shell at every boot**: the first block of S:User-Startup
+(`;BEGIN CShell` ... `If EXISTS C:cshell` / `Resident shell C:cshell REPLACE`; the old file kept as
+S:User-Startup.bak; checked after a reboot: a NewShell runs csh's language), C:ls 0.2, CTerm 0.3b34 with `shell=csh`. 0.1b6 has bash's missing parts (below);
 all tests green (PC 61 + 255 checks, 5 language scripts and 12 ROM pairs on the A1200, cshell's
 shelltest on the A1200, no memory lost over 10 runs of tests/lang/bash.csh). CTerm **0.3b34**
 (bracketed paste fixed) INSTALLED 2026-10-14 (the user asked; CTerm-0.3b33.bak kept).
