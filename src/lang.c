@@ -3287,8 +3287,9 @@ static long cond(Node *n)
 
 static int stopping(void)
 {
-    if (!aborted && os_break()) {
-        if (traps[TR_INT]) runtrap(TR_INT);             /* '' : ignored */
+    int b;
+    if (!aborted && (b = os_break())) {
+        if (b == 1 && traps[TR_INT]) runtrap(TR_INT);   /* '' : ignored; Ctrl-D stops all the same */
         else { os_err("***Break\n", 8); aborted = 1; }
     }
     return aborted || sh_exiting || sh_return || sh_break || sh_continue;
@@ -3381,6 +3382,7 @@ static int ownstage(Arena *ar, Node *n, struct cmdline *c, void *job)
     int i;
     char name[40];
     const char *self = os_self();
+    if (!*self) return 0;                         /* said (cshell without its C:csh) */
     if (strlen(self) >= sizeof c->cmd || !os_exists(self)) { sh_error("csh's own command in a process of its own needs C:csh:", n->src ? n->src : ""); return 0; }
     memset(&t, 0, sizeof t); t.ar = ar;
     sput(&t, "#!csh\n", 6);
@@ -3472,6 +3474,7 @@ static long __attribute__((noinline)) pipeline(Node *n, int bg)
         if (!own[i] && (cs[i] = aalloc(&ar, sizeof *cs[i])) && !stagecmd(&ar, st[i], cs[i], tmp + ntmp, &ntmp)) cs[i] = NULL;
         if (ntmp > 4 * 31) break;
     }
+    os_flush();                         /* csh's own output before a "not found" */
     for (i = ns - 1; i >= 0 && !aborted; i--) {
         if (!cs[i]) continue;
         if (!(pre[i] = os_prepare(cs[i])) && i) {

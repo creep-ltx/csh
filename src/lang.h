@@ -33,7 +33,7 @@ void *os_redir(struct cmdline *c);               /* open + select; NULL = failed
 void os_unredir(void *save);
 void *os_capture(void);                          /* $(...): the output to a file */
 int os_captured(void *save, char **text);        /* back; *text os_alloc'ed */
-int os_break(void);                              /* Ctrl-C since the last look */
+int os_break(void);                              /* since the last look: 1 Ctrl-C, 2 Ctrl-D */
 int os_test(const char *path, int op);           /* -e -f -d -r -w -x -s */
 int os_glob(const char *pattern, void (*fn)(const char *name, void *u), void *u);
 int os_globok(const char *cmd);                  /* the command takes several names (its template has /M) */

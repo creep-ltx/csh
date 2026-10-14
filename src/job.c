@@ -702,8 +702,17 @@ int job_running(void)
 
 long job_list(void)
 {
-    struct job *j;
-    for (j = jobs; j; j = j->next) say(j, alldone(j) ? "Done" : "Running", 0);
+    struct job *j, *n;
+    for (j = jobs; j; j = n) {
+        n = j->next;
+        if (alldone(j)) {          /* said once, as bash: not again at the prompt */
+            LONG rc;
+            unlink_(j);
+            rc = reap(j, NULL);
+            say(j, "Done", rc);
+            FreeVec(j);
+        } else say(j, "Running", 0);
+    }
     return 0;
 }
 

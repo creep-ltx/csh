@@ -624,7 +624,13 @@ int edit_line(const char *p, char *line, int size)
             suglen = 0;
             if (comp_complete(buf, &len, &cur, sizeof buf - 1) && comp_listing()) fresh();
             break;
-        case A_CLEAR: term_outs("\f"); fresh(); break;
+        case A_CLEAR:
+            /* CTerm: up to the top, clear below - its FF, CSI H and CSI 2J
+             * from a raw program mean a whole-screen one (Ed, More): moved
+             * to its own screen, the old one back when csh runs a command */
+            term_outs(term_cterm ? "\x1b[999A\r\x1b[J" : "\f");
+            fresh();
+            break;
         case A_CANCEL:      /* the line (and an unfinished command, and the rest of a paste) thrown away */
             edit_droppaste();
             suglen = 0; navigating = 1; cur = len; draw(); navigating = 0;

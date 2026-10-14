@@ -248,11 +248,14 @@ int os_captured(void *p, char **text)
     return n;
 }
 
+/* 1 Ctrl-C, 2 Ctrl-D (stops csh's own commands even when an INT trap
+ * takes Ctrl-C, as Ctrl-D stops an Amiga script) */
 int os_break(void)
 {
-    if (!(SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C)) return 0;
+    ULONG s = SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D) & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D);
+    if (!s) return 0;
     csh.broke = 1;
-    return 1;
+    return s & SIGBREAKF_CTRL_D ? 2 : 1;
 }
 
 /* ---- files ---- */
@@ -467,7 +470,33 @@ long os_number(void) { return csh.me->pr_TaskNum; }
 
 int os_exists(const char *cmd) { return run_exists(cmd); }
 
-const char *os_self(void) { return csh.self[0] ? csh.self : "csh"; }
+/* csh's own file, for a csh a job of csh's own runs in. cshell (a resident
+ * shell, no file of its own) uses C:csh - only of its own version: an
+ * older one would not read what it is handed (arrays...), said once. */
+const char *os_self(void)
+{
+    static int checked, ok;
+    if (csh.self[0]) return csh.self;
+    if (!checked) {
+        static const char want[] = "$VER: csh " CSH_VERSION " (";
+        BPTR fh = Open("C:csh", MODE_OLDFILE);
+        char *b = AllocVec(4096 + sizeof want, MEMF_ANY);
+        LONG n, keep = 0;
+        checked = 1;
+        if (fh && b) {
+            while (!ok && (n = Read(fh, b + keep, 4096)) > 0) {
+                LONG i, end = keep + n;
+                for (i = 0; i + (LONG)sizeof want - 1 <= end; i++) if (!memcmp(b + i, want, sizeof want - 1)) { ok = 1; break; }
+                keep = end < (LONG)sizeof want - 1 ? end : (LONG)sizeof want - 1;
+                memmove(b, b + end - keep, keep);
+            }
+        }
+        if (fh) Close(fh);
+        if (b) FreeVec(b);
+        if (!ok) FPuts(csh.out, "csh: C:csh is not version " CSH_VERSION " (install it with cshell): csh's own commands with & cannot run\n");
+    }
+    return ok ? "C:csh" : "";
+}
 
 /* The CLI number and where this csh's data lies: a csh started from csh
  * (same CLI) or one in another tab never picks the same T: or PIPE: name. */

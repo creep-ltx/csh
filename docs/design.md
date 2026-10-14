@@ -7,34 +7,60 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
-**State at the end of 2026-10-13 (one long session built steps 0-7):** csh **0.1b3** is installed
-on the A1200 as C:csh, `ls` 0.1 as C:ls (the user's CUtils ls kept as C:ls-cutils.bak), CTerm
-**0.3b33** in Work:Utils/CTerm with `shell=csh` in CTerm.prefs: every new CTerm tab starts csh
-(0.3b31 kept as CTerm-0.3b31.bak / Parts-0.3b31.bak). All tests green (PC 57 + 119, 12 ROM
-pairs, 3 language scripts on the real ROM, FS-UAE and A1200).
+**State at the end of 2026-10-14: csh 0.1b6, NOT installed** (the user decides; C:csh on the A1200
+is still 0.1b5, C:ls 0.2, CTerm 0.3b33 with `shell=csh`). 0.1b6 has bash's missing parts (below);
+all tests green (PC 61 + 255 checks, 5 language scripts and 12 ROM pairs on the A1200, cshell's
+shelltest on the A1200, no memory lost over 10 runs of tests/lang/bash.csh). CTerm **0.3b34**
+(bracketed paste fixed, see CTerm's docs) is built, tried on the A1200, also NOT installed.
+**Install the two together**: cshell's `&` of csh's own commands needs C:csh of its own version.
 
 **The user's rule for csh (2026-10-13): the best of bash, zsh and fish; when in doubt ask how
 they handle it; fast (never slower than the ROM Shell, tests/bench.sh); in the end a full shell
 replacement.**
 
-**What csh still lacks** (the user asked; the list to work from, daily-use first):
-- bash language: arrays, `trap`, `[[ ]]`, `getopts`, `$RANDOM`, `readonly`, `printf %f`,
-  arithmetic assignments (`+=`, `++`), `?:`, `**`, history expansion (`!!`, `!$`), `cd -`,
-  `set -u`, `set -o pipefail`, `select`.
-- `( )` and `$( )` are not subshells (no fork on the Amiga: variables set inside stay).
-- `*` goes to programs as `#?` (they match): `echo *.txt` prints `#?.txt`; only csh's own `for`
-  matches files. Revisit with the user's rule (bash/zsh expand globs in the shell).
-- csh's own commands cannot run with `&`; a csh stage in the middle of a pipe writes a T: file
-  (not streaming); jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C.
-- The prompt knows only the ROM's escapes (%N %S %R); no right prompt, no git-like info.
-- Completion: no completion of a keyword's value (`TO`, `LFORMAT`), no fuzzy/menu selection.
-- Pipes are only level with the ROM's (0.99-1.01): a process per stage costs both the same.
-- Not loaded in parts (85 KB at once); not yet the user shell of every Shell window (only
-  CTerm tabs and typing `csh`).
-- `ls` calls every file with no ending and the e bit a program (a few data files show green);
-  Ahiru and Maki do not read ENVARC:FileColours yet.
-- Untested on the user's own scripts and daily use: the next session should ask what the user
-  ran into.
+**Done 2026-10-14 (the user: "missing bash features should go in"; * expanded, csh's own commands
+with &, prompt extras - "fix"):**
+- arrays (indexed, `declare -A`), `declare/typeset/local/readonly` (words not split: `local
+  y=$x`), `${x:o:l}` `${x/a/b}` `${x//a/b}` `${x^^}` `${x,,}` `${!x}` `${!a[@]}` `${a[@]:1:2}`,
+  `$'..'`, `$RANDOM` `$SECONDS` `$-`, `set -u -f -o pipefail/-o name/-H`, `PIPESTATUS`.
+- arithmetic: `++ -- += -= *= ... ?: ** & | ^ << >> ,` (bash's order; the untaken side makes no
+  assignments), `16#ff 2#101 010`, `(( ))`, `let`, `for ((;;))`, `for ... { }`.
+- `[[ ]]` (no splitting, `==` patterns, `=~` regex in `src/regex.c` - a Pike VM, POSIX ERE
+  plus `\w \s`, `BASH_REMATCH`), `-v -nt -ot`.
+- `trap` EXIT/INT/ERR/RETURN (HUP, TERM... taken, never come), `getopts`, `select`, `mapfile`,
+  `read -a`, `printf -v` and `%f %e %g` (worked on the decimal text, half to even on a tie: no
+  float code linked), `cd -`, `cd ..` (is `/`), `cd` alone (HOME, else SYS:), `pushd popd dirs`,
+  `unset -f`, `|&`, `<(cmd)` (a T: file).
+- `( )` and `$( )` are subshells in effect: the local variables and aliases, current dir,
+  functions, arrays, `$1..`, options are put back after (`snap_take/snap_give`, `os_snap`).
+- `*` `?` `[..]` match files in csh (bash): `echo *.txt` lists them; an Amiga command gets the
+  files - except one whose template takes one name (no `/M`: Dir, CD), which gets the pattern as
+  `#?` as on the Amiga; a line too long falls back to the pattern; no match: the pattern goes on
+  (`#?.none`, the program says "no match"). `?` alone stays ReadArgs' help. `set -f` stops it.
+- csh's own commands with `&`, and a loop/function/block in a pipe's middle: a csh of its own
+  (the same file, `csh.self`) runs a T: script with the functions, arrays, `$1..` and options;
+  the local variables and aliases come with NP_Cli (verified). Streams; `f | phead 3` with an
+  endless `f` ends (the last stage done, Ctrl-C after a second). A quick built-in in the middle
+  (echo, printf) still writes a T: file.
+- at the prompt: `!! !$ !^ !* !n !-n !str ^a^b` (`src/bang.c`, shown before it runs, as bash);
+  `PROMPT`/`PS1` with zsh's escapes (`%~ %c %V %T %* %D %j %M %E %h %F{red} %K{..} %B %U
+  %(?.a.b) %(j.a.b)`, `$var` and `$(cmd)` expanded first), `RPROMPT` (right edge, gone when the
+  line reaches it), `PS2`, `$CMD_DURATION` (ms, fish). Ctrl-D stops csh's own loops even when an
+  INT trap takes Ctrl-C; Ctrl+L in CTerm clears with codes CTerm does not take for a whole-screen
+  program (its FF/CSI H/CSI 2J from a raw reader moved csh to CTerm's other screen).
+- a pipe's commands are found and loaded once, before any starts (they were looked up twice):
+  pipes in the csh language 0.99 of the ROM's.
+
+**What csh still lacks** (the list to work from):
+- size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
+  modular, load on demand); never measured slower to start (84 ms either way on the A1200).
+- jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C; `$!`, `disown`, `wait -n` missing.
+- completion: a keyword's value (`TO`, `LFORMAT`), menu selection; `**/` (globstar), extglob.
+- `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
+- no git: `$(...)` in PROMPT is the way to show anything else.
+- `ls` calls every file with no ending and the e bit a program; Ahiru and Maki do not read
+  ENVARC:FileColours yet.
+- Untested on the user's own scripts and daily use: ask what the user ran into.
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
    (`docs/audit-2026-10-13.md`) and its fixes: csh 0.1b4 and ls 0.2, installed on the A1200
@@ -111,8 +137,16 @@ replacement.**
   `=`, `set` with nothing after it go to the ROM's own. No `type` built-in (C:Type prints files;
   Which says where a command is). `Set name value` and `set name value` both set.
 - **A word back to the Amiga**: a word that had quotes is quoted the Amiga way (`*` -> `**`, `"`
-  -> `*"`, LF -> `*N`); an unquoted `*` becomes `#?` and the program matches the pattern;
-  `KEY=value` unquoted stays as it is (ReadArgs' keys). `for f in *.txt` matches itself.
+  -> `*"`, LF -> `*N`); `KEY=value` unquoted stays as it is (ReadArgs' keys).
+- **`*` matches files in csh (2026-10-14, the user's rule: as bash/zsh/fish)**; superseded: "an
+  unquoted `*` becomes `#?` and the program matches". A command whose template takes one name
+  (no `/M`: Dir, CD) still gets the pattern as `#?`; so does a line the files make too long, and a
+  pattern nothing matches. `*` alone is no longer the console (`CONSOLE:` is). `#?` is never
+  matched by csh: it stays the Amiga's own way to hand a program a pattern.
+- **Ctrl-D stops csh's own commands** even when `trap ... INT` takes Ctrl-C (2026-10-14), as it
+  stops an Amiga script: the way out of a loop whose trap catches every Ctrl-C.
+- **csh's own command in a process of its own** (`&`, a pipe's middle) is a second csh running a
+  T: script (2026-10-14): bash's subshell, what it changes stays there.
 - **`#` is a comment at a word's start, except an Amiga pattern** (`#?`, `#(`, `#[`, `##`, `#~`).
 - **`$( )` and `( )` are not subshells** (no fork on the Amiga): they run in csh itself, so a
   variable set inside stays set.
@@ -284,7 +318,7 @@ csh reads lines plainly.
 | `;` | starts a comment | separates commands | csh: separator; Amiga scripts: comment |
 | `#` | a pattern character (`#?`) | starts a comment (at a word's start) | csh: comment only at a word's start, so `#?.txt` stays a pattern |
 | `*` | escape in quotes (`*N`, `*"`), alone = the console | wildcard | csh: wildcard in a word with other characters, `*` alone is still the console; `\` escapes |
-| wildcards | the program matches `#?` itself | the shell expands `*` | csh turns `*` into `#?` and lets the program match (Amiga programs take patterns; many take only one argument); csh's own `for f in *.txt` expands it itself |
+| wildcards | the program matches `#?` itself | the shell expands `*` | csh expands `*` (2026-10-14); a command whose template takes one name gets `#?` and matches itself; `#?` typed goes to the program as it is |
 | `Set` | `Set name value` | `name=value`, `set -e` | both: `Set name value` and `set name value` set; `name=value` too; `set -x`-style flags are csh options |
 | `Alias` | `Alias name cmd []` | `alias name='cmd'` | both forms (an `=` means bash's) |
 | `Echo` | `NOLINE`, `FIRST`, `LEN` | `-n`, `-e` | both |

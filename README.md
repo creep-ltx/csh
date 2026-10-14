@@ -23,17 +23,20 @@ other programs start (wasabi's `run` too). The boot is not touched. Until the ne
 
 **Back to the ROM Shell:** reboot, or run `bootshell` (`tests/probe/bootshell.c`).
 
-**Tried in FS-UAE only** (`tests/shelltest.sh`). Not on the A1200 unless you decide so.
+Tried in FS-UAE and on the A1200 (`tests/shelltest.sh`, `A1200=yes` for the A1200). Install
+`C:csh` with it, of the same version: `&` with csh's own commands runs a second csh from there.
 
 **From ROM instead** (FS-UAE): `make cshell-ext.rom`, then `tests/romuae.sh start` boots the
 emulator with csh as the Shell from a second ROM; the Kickstart file is not changed
 (`tests/romtest.sh` checks it). How it works: docs/design.md, "csh in a ROM".
 
-**State: 0.1b5 (2026-10-14)** - runs commands and Amiga scripts exactly as the ROM Shell
-does; its own prompt (colours as you type, suggestions from history, Ctrl+R, Tab, every key in
-`ENVARC:CShell/csh.keys`); the bash-style language at the prompt and in `#!csh` scripts. Pipes, `&` and
-jobs of its own; `ls` coloured by kind (`ENVARC:FileColours`, shared with the terminal family).
-Faster than the ROM Shell in every measured case.
+**State: 0.1b6 (2026-10-14)** - runs commands and Amiga scripts exactly as the ROM Shell
+does; its own prompt (colours as you type, suggestions from history, Ctrl+R, Tab, `!!`, every key
+in `ENVARC:CShell/csh.keys`, `PROMPT`/`RPROMPT` with zsh's `%` escapes); the bash-style language
+at the prompt and in `#!csh` scripts: arrays, `[[ ]]`, `(( ))`, `trap`, `getopts`, `select`,
+subshells that keep their changes to themselves, `*` matching files. Pipes, `&` and jobs of its
+own (csh's own commands too); `ls` coloured by kind (`ENVARC:FileColours`, shared with the
+terminal family). Faster than the ROM Shell in every measured case.
 Start with [docs/design.md](docs/design.md), "Start here".
 
     make            builds csh and ls (bebbo's gcc in ~/opt/amiga)

@@ -138,9 +138,11 @@ static int dirname_(char *b, int size)
     return strlen(b);
 }
 
+static int depth;               /* zprompt inside %( ) */
+
 static const char *zprompt(const char *p, int colours, char *out, int size)
 {
-    int i, o = 0, n = strlen(p), depth = 0;
+    int i, o = 0, n = strlen(p);
     char dir[256];
     for (i = 0; i < n && o < size - 64; i++) {
         char c;
@@ -254,7 +256,7 @@ static const char *zprompt(const char *p, int colours, char *out, int size)
         default: break;
         }
     }
-    if (colours && o) o = addsgr(out, o, 0);
+    if (colours && o && !depth) o = addsgr(out, o, 0);    /* not inside %( ): its colour holds */
     out[o] = 0;
     return out;
 }

@@ -7,9 +7,10 @@
 #  - memory: 10 System() shells must leave nothing (Avail FLUSH);
 #  - a NewShell window: the prompt, csh's language, a pipe, exit closes it;
 #  - the BootShell put back at the end (tests/probe/bootshell).
-# Never on the A1200: replacing its shell is the user's to decide.
+# On the A1200 only when the user said so (A1200=yes): it replaces its shell
+# until the end (bootshell) or a reboot.
 cd "$(dirname "$0")"; W=${W:-probe/w}
-[ "$W" = probe/a ] && { echo "shelltest.sh: not on the A1200" >&2; exit 2; }
+[ "$W" = probe/a ] && [ "$A1200" != yes ] && { echo "shelltest.sh: on the A1200 only with A1200=yes (the user's to decide)" >&2; exit 2; }
 make -s -C .. cshell >/dev/null || exit 2
 [ -f probe/bootshell ] || ~/opt/amiga/bin/m68k-amigaos-gcc -Os -noixemul -s -o probe/bootshell probe/bootshell.c || exit 2
 $W put ../cshell RAM:cshell >/dev/null || exit 2
