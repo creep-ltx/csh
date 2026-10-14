@@ -7,13 +7,12 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
-**State at the end of 2026-10-14: csh 0.1b6, NOT installed** (the user decides; C:csh on the A1200
-is still 0.1b5, C:ls 0.2, CTerm 0.3b33 with `shell=csh`). 0.1b6 has bash's missing parts (below);
+**State at the end of 2026-10-14: csh 0.1b6 INSTALLED on the A1200** (the user asked): C:csh and
+C:cshell 0.1b6 (C:csh-0.1b5.bak kept; cshell is only a file there, not the Shell: that needs
+`Resident shell C:cshell REPLACE`), C:ls 0.2, CTerm 0.3b34 with `shell=csh`. 0.1b6 has bash's missing parts (below);
 all tests green (PC 61 + 255 checks, 5 language scripts and 12 ROM pairs on the A1200, cshell's
 shelltest on the A1200, no memory lost over 10 runs of tests/lang/bash.csh). CTerm **0.3b34**
-(bracketed paste fixed) INSTALLED 2026-10-14 (the user asked; CTerm-0.3b33.bak kept). The user
-said install csh too: C:csh-0.1b5.bak is made, but writing C:csh / C:cshell was refused by this
-session's permission check - the user copies them by hand or allows it.
+(bracketed paste fixed) INSTALLED 2026-10-14 (the user asked; CTerm-0.3b33.bak kept).
 **Install the two together**: cshell's `&` of csh's own commands needs C:csh of its own version.
 
 **The user's rule for csh (2026-10-13): the best of bash, zsh and fish; when in doubt ask how
