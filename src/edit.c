@@ -563,6 +563,7 @@ int edit_line(const char *p, char *line, int size)
             break;
         }
         if (k == K_RESIZE) { term_outs("\n"); fresh(); draw(); continue; }
+        if (k == K_ENDED) { term_outs("\n"); term_flush(); return -1; }   /* as Ctrl-\: csh ends */
         act = keys_find(k);
         if (act == A_NONE) {
             if (k >= 32 && k < 256 && k != 127 && !(k & TM_MASK)) {

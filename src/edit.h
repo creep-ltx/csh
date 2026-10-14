@@ -14,7 +14,8 @@ enum {
     K_INS, K_DEL, K_BS, K_TAB, K_ENTER, K_ESC, K_HELP,
     K_F1,                       /* K_F1 .. K_F1 + 11 */
     K_PASTE = 0x120000,         /* a marked paste: term_paste() has it */
-    K_RESIZE
+    K_RESIZE,
+    K_ENDED                     /* the input ended (a CTerm tab or pane closed): csh ends */
 };
 #define TM_SHIFT 0x01000000
 #define TM_ALT   0x02000000

@@ -7,6 +7,10 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
+**0.1b7 (2026-10-14, installed with C:cshell, 0.1b6 kept as .bak):** csh ends when its input
+ends while it waits at the prompt (raw read of 0: a CTerm tab or pane closed) - before, the tab
+stayed open with csh in it. Goes with CTerm 0.3b35.
+
 **State at the end of 2026-10-14: csh 0.1b6 INSTALLED on the A1200** (the user asked): C:csh and
 C:cshell 0.1b6 (C:csh-0.1b5.bak kept); **cshell is the Shell at every boot**: the first block of S:User-Startup
 (`;BEGIN CShell` ... `If EXISTS C:cshell` / `Resident shell C:cshell REPLACE`; the old file kept as

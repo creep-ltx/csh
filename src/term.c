@@ -277,7 +277,8 @@ static void readnow(void)
     while (guard-- && qroom() > (int)sizeof ibuf && WaitForChar(tin, 0)) {
         LONG want = inpaste ? (LONG)sizeof ibuf - ilen : 1;
         LONG n = Read(tin, ibuf + ilen, want);
-        if (n <= 0) break;
+        if (n == 0) { push(K_ENDED); break; }   /* the end of the input, raw or not */
+        if (n < 0) break;
         ilen += n;
         parse(0);
         if (ilen >= (int)sizeof ibuf - 8) { parse(1); if (ilen >= (int)sizeof ibuf - 8) ilen = 0; }
