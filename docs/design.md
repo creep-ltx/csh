@@ -7,6 +7,11 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
+**0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
+C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
+a name, a -flag) is passed to the kill command (CUtils' kill: by CLI number, 0x address or name),
+as `wait` does for Wait. Open Shells keep 0.1b7 until closed.
+
 **0.1b7 (2026-10-14, installed with C:cshell, 0.1b6 kept as .bak):** csh ends when its input
 ends while it waits at the prompt (raw read of 0: a CTerm tab or pane closed) - before, the tab
 stayed open with csh in it. Goes with CTerm 0.3b35.
