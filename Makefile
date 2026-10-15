@@ -16,7 +16,7 @@ OBJ     = $(patsubst src/%.c,build/%.o,$(SRC))
 SOBJ    = $(patsubst src/%.c,build-shell/%.o,$(SRC))
 SFLAGS  = $(CFLAGS) -resident32 -DCSH_USERSHELL
 
-all: csh ls cshell
+all: csh cshell
 
 cshell: build-shell/shellstart.o $(SOBJ)
 	$(CC) -noixemul -resident32 -m68020 -nostartfiles -s build-shell/shellstart.o $(SOBJ) $(SLIBS) -o $@
@@ -38,8 +38,6 @@ build-shell/%.o: src/%.c src/csh.h src/line.h src/edit.h src/lang.h
 	@mkdir -p build-shell
 	$(CC) $(SFLAGS) -c $< -o $@
 
-ls: tools/ls.c
-	$(CC) $(CFLAGS) $(LDFLAGS) tools/ls.c -o $@
 
 csh: $(OBJ)
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
@@ -52,6 +50,6 @@ test:
 	tests/run.sh
 
 clean:
-	rm -rf build build-shell csh ls cshell
+	rm -rf build build-shell csh cshell
 
 .PHONY: all test clean

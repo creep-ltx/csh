@@ -4,7 +4,7 @@ MakeDir RAM:cb
 CD RAM:cb
 echo a > a.txt; echo b > b.txt; echo c > c.doc
 echo *.txt "*.txt" *.none
-ls -1 *.txt
+RAM:ls -1 *.txt
 Dir *.doc
 List *.txt QUICK NOHEAD
 a=(one two "three four")

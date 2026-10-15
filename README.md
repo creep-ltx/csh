@@ -35,11 +35,11 @@ does; its own prompt (colours as you type, suggestions from history, Ctrl+R, Tab
 in `ENVARC:CShell/csh.keys`, `PROMPT`/`RPROMPT` with zsh's `%` escapes); the bash-style language
 at the prompt and in `#!csh` scripts: arrays, `[[ ]]`, `(( ))`, `trap`, `getopts`, `select`,
 subshells that keep their changes to themselves, `*` matching files. Pipes, `&` and jobs of its
-own (csh's own commands too); `ls` coloured by kind (`ENVARC:FileColours`, shared with the
-terminal family). Faster than the ROM Shell in every measured case.
+own (csh's own commands too). `ls` is CUtils' (coloured by kind from `ENVARC:FileColours`, shared
+with the terminal family). Faster than the ROM Shell in every measured case.
 Start with [docs/design.md](docs/design.md), "Start here".
 
-    make            builds csh and ls (bebbo's gcc in ~/opt/amiga)
+    make            builds csh and cshell (bebbo's gcc in ~/opt/amiga)
     make test       the line rules and the language, checked on the PC
     tests/pairs.sh  ROM Shell and csh side by side in FS-UAE (W=probe/a: the A1200)
     tests/langtest.sh, tests/bench.sh   the language on the real ROM; the speed

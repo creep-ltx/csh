@@ -93,8 +93,7 @@ saved layout can start the program again with its arguments.
 - completion: a keyword's value (`TO`, `LFORMAT`), menu selection; `**/` (globstar), extglob.
 - `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
 - no git: `$(...)` in PROMPT is the way to show anything else.
-- `ls` calls every file with no ending and the e bit a program; Maki does not read
-  ENVARC:FileColours yet (Ahiru does since 0.3b3, 2026-10-15).
+- Maki does not read ENVARC:FileColours yet (Ahiru does since 0.3b3, 2026-10-15; `ls` is CUtils').
 - The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
@@ -129,7 +128,7 @@ saved layout can start the program again with its arguments.
      Amiga-script pipes run the same way, ROM-exact (every stage looked for first). `&`, `jobs`,
      `fg`, `kill`, `wait` (`wait 5` is the Amiga's Wait); "[n] Done" at the next prompt; exit
      with jobs running warns once, then leaves csh's code in memory for them.
-   - **Step 6, `ls` and the family colour file** (`tools/ls.c`, built as `ls`, 14 KB): CUtils'
+   - **Step 6, `ls` and the family colour file** (`tools/ls.c`, retired 2026-10-15 for CUtils' ls, 14 KB): CUtils'
      ls in C (`-1aAdFhlrRSt`, columns from `$COLUMNS` which csh keeps, else the console asked;
      natural order; ExAll), coloured by kind from **`ENVARC:FileColours`** (`KIND CTERM,PLAIN`
      SGR numbers as in csh.prefs, `.EXT KIND`), written with the defaults when missing.
@@ -426,6 +425,9 @@ From CCON (which already feels like fish/bash/zsh) and CTerm's console:
 ## Colours
 
 - csh colours its prompt and the typed line.
+- **Retired 2026-10-15 (the user asked): csh's own `ls` (`tools/ls.c`) is gone**; `ls` is CUtils'
+  (`~/Projects/CUtils`, src/ls.c, its own tests), C:ls 0.3b1 on the A1200 since 2026-10-15, which
+  grew from it and reads the same FileColours (lib/cu_colours.c). Below is the history.
 - File lists are coloured by whoever lists. csh's `ls` is **CUtils' `ls`**
   (`AmigaTools/cutils`, already colours drawers and the hidden class grey, colours only on a
   terminal), rewritten in C and taught the kinds: drawers, icons (`.info`), hidden (`h` bit),
