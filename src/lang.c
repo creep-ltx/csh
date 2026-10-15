@@ -3231,7 +3231,7 @@ static void execredir_end(void)
 
 /* command -v / -V names: what each would run; rc 1 when one is nothing */
 static int declkind(const char *w);
-static long cmd_v(Exp *e, int verbose)
+static long __attribute__((noinline)) cmd_v(Exp *e, int verbose)     /* its buffers not in run_simple's frame */
 {
     char ab[LINE_MAX], path[300];
     int i;
@@ -3405,13 +3405,13 @@ static long __attribute__((noinline)) run_simple(Node *n)
         }
         /* an Amiga command */
         if (!amigaline(&ar, &e, c)) { r = 10; goto done; }
-        {
-            char before[256];
-            int had = os_pwd(before, sizeof before);
+        {   /* the names in the arena, not on the stack: run_simple is in every level of a
+             * function calling itself (its frame is how deep functions can go) */
+            char *before = aalloc(&ar, 512), *now = before + 256;
+            int had = before && os_pwd(before, 256);
             r = os_run(c);
             if (had) {          /* CD, a drawer typed alone: cd - comes back */
-                char now[256];
-                if (os_pwd(now, sizeof now) && strcmp(now, before)) os_setvar("OLDPWD", before, V_LOCAL);
+                if (os_pwd(now, 256) && strcmp(now, before)) os_setvar("OLDPWD", before, V_LOCAL);
             }
         }
     }

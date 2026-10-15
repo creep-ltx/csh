@@ -218,6 +218,14 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+**0.1b10 (2026-10-15, the user: "maybe 32 KB is enough?"): stack 32 KB, a cshell window ~123 KB
+(was 155).** First measured how deep things go (tests: a function calling itself, nested `$( )`,
+`{ }`, `if`, `(( ))`): 0.1b9 had made run_simple's frame 1660 bytes (cmd_v inlined into it; was
+840 in 0.1b8), so functions went only 33 deep in 64 KB. Now cmd_v is noinline and the two pwd
+buffers are in the arena: run_simple 348 bytes. 64 KB: functions reach csh's own limit of 100;
+32 KB: functions 59, `$( )` 20 deep (25 not), then "too deep" (never a crash: STACK_NEEDED).
+Check frames with `-fstack-usage` (bebbo's gcc): anything in run_simple's frame is paid per level.
+
 csh's own part of a window: its code 145 KB (each csh loads its own; cshell's is shared), its 64 KB
 stack (main.c STACKSZ, StackSwap), ~50 KB of fixed buffers (bss: comp 14, edit 12.5, run 7, term 6.5
 KB...). **So loading the language on first use saves nothing at the prompt** (the first typed line

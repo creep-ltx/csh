@@ -652,7 +652,10 @@ shell:
 /* A stack of its own: csh runs on the Shell's (often 4 KB), and the csh
  * language calls itself (functions, $(...)). Commands get their own stack
  * from RunCommand as always. */
-#define STACKSZ 65536
+/* csh's own stack (its programs get theirs from Stack): 32 KB since 0.1b10
+ * (was 64): functions 59 deep, $( ) 20 deep, then "too deep", never a
+ * crash (STACK_NEEDED). Measured docs/design.md "Memory per window". */
+#define STACKSZ 32768
 static struct StackSwapStruct sss;
 static int sret;
 
