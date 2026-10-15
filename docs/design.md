@@ -242,11 +242,22 @@ run apart.
 - Updating: the same two lines; Shells already open keep the old code (in memory till a reboot).
 - Tests: tests/install.sh (sourced by each test) does what User-Startup does; pairs.sh and
   bench.sh first measure the ROM Shell, so they want a fresh machine (they check: probe/whoshell).
-- **Open: speed of Execute'd scripts.** csh runs a command from a script given to the ROM's
-  `Execute` (T: copy, cli_CurrentInput) ~1 ms slower than from a file it reads itself: 400
-  `Echo >NIL:` lines 3.68 s against the ROM Shell's 3.26 (bench "internal" 1.13; the others
-  0.88-1.00). Not new: 0.1b10 as cshell had it too (`csh COMMAND "Execute x"` 3.76 s, `csh FROM x`
-  read directly 2.90 s). Comment lines are not slower: it is per command. To find.
+- **Speed of Execute'd scripts (measured 2026-10-15, an experiment build with E-clock timing,
+  not kept).** A script run by the ROM's `Execute` (and a script run by name: csh hands it to
+  Execute) costs csh ~1.2 ms more *per command* than the same file read by csh itself: 400
+  `FailAt 21` lines run 2.03 s against 1.56, 400 `Echo >NIL:` 3.27 against 2.41, 400 `RAM:rcx 0`
+  (a disk command, not a ROM internal) 6.10 s against 5.64. Reading the lines costs the same
+  (0.30 s for 400); csh's own work per line is the same; **the difference is inside DOS's
+  RunCommand** (1.99 s against 1.13 for the Echo lines). Not the command's input (Input() is
+  cli_StandardInput in both), not cli_CommandFile (set by hand: no change), not the handle's
+  buffer (a bigger one: no change; unbuffered is much slower). Why RunCommand is slower while
+  cli_CurrentInput is the ROM Execute's T: copy: not found. The copy itself is the script with
+  comment lines and runs of blank lines taken out (that is why comments are free under Execute).
+  **csh reading the file itself is faster than the ROM Shell** (the Echo script 2.84 s, the ROM
+  Shell's Execute 3.26 s), but its own comment and blank lines cost ~2 ms each (alias, variable
+  and parse passes for nothing). The way out (proposed): csh runs an Amiga script itself (no
+  .KEY/.BRA... line, no arguments: else the ROM's Execute, which does those) and skips comment
+  and blank lines before the passes.
 
 **Towards ONE file, C:csh (the user's plan, 2026-10-15): step 1 done in FS-UAE** - point
 Execute()'s Shell (the BootShell entry) at cshell after the boot: `tests/probe/execshell` copies
