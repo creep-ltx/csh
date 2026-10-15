@@ -358,6 +358,34 @@ void script_end(void)
 
 static int builtin(struct cmdline *c)
 {
+    if (!stricmp(c->cmd, "csh")) {      /* csh FROM / COMMAND by the Amiga's rules: csh itself, no new process */
+        static const char tpl[] = "FROM,ARGS/M,COMMAND=-C/K";
+        LONG a[3] = { 0, 0, 0 };
+        struct RDArgs *rd = AllocDosObject(DOS_RDARGS, NULL), *got;
+        char *argv[40];
+        int argc = 0;
+        if (!rd) return 0;
+        rd->RDA_Source.CS_Buffer = (STRPTR)c->args;
+        rd->RDA_Source.CS_Length = c->arglen;
+        if (!(got = ReadArgs((STRPTR)tpl, a, rd))) {
+            PrintFault(IoErr(), "csh");
+            set_rc(10, IoErr());
+            FreeDosObject(DOS_RDARGS, rd);
+            return 1;
+        }
+        argv[argc++] = "csh";
+        if (a[2]) { argv[argc++] = "COMMAND"; argv[argc++] = (char *)a[2]; }
+        else if (a[0]) {
+            char **m = (char **)a[1];
+            argv[argc++] = "FROM";
+            argv[argc++] = (char *)a[0];
+            while (m && *m && argc < 39) argv[argc++] = *m++;
+        }
+        set_rc(lang_csh(argc, argv), 0);
+        FreeArgs(got);
+        FreeDosObject(DOS_RDARGS, rd);
+        return 1;
+    }
     if (!stricmp(c->cmd, "history")) {
         hist_print(csh.out);
         set_rc(0, 0);
@@ -443,7 +471,11 @@ int run_prepare(struct cmdline *c, struct prepared *p)
         if (fib->fib_Protection & FIBF_SCRIPT) {
             char path[512];
             if (!lockname(lock, path, sizeof path)) return 0;
-            if (lang_isscript(path)) {
+            if (lang_isscript(path) && os_shell_is_csh()) {
+                /* the system Shell is csh: it runs the #!csh script itself */
+                if (!quoted(p->romline, sizeof p->romline, path, c->args)) return 0;
+                p->usershell = 1;
+            } else if (lang_isscript(path)) {
                 strcpy(p->romline, "csh FROM ");
                 if (!quoted(p->romline + 9, sizeof p->romline - 9, path, c->args)) return 0;
             } else if (!quoted(p->romline, sizeof p->romline, path, c->args)) return 0;
@@ -483,7 +515,8 @@ LONG run_prepared(struct cmdline *c, struct prepared *p)
         return rc;
     }
     Flush(Output());
-    rc = SystemTags(p->romline, SYS_Input, c->inh ? (BPTR)c->inh : Input(), SYS_Output, Output(), TAG_END);
+    rc = SystemTags(p->romline, SYS_Input, c->inh ? (BPTR)c->inh : Input(), SYS_Output, Output(),
+                    SYS_UserShell, p->usershell, TAG_END);
     set_rc(rc, IoErr());
     run_release(p, 0);
     return rc;

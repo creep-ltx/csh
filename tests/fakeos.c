@@ -150,6 +150,9 @@ int os_readkeys(char *buf, int size, int n, int exact, long ticks, int silent)
     return got;
 }
 
+int os_shell_is_csh(void) { return 0; }
+int os_mkscript(const char *name) { (void)name; return 1; }
+
 /* a name with a capital is an Amiga command in C: */
 int os_which(const char *name, char *buf, int size)
 {

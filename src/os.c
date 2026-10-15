@@ -160,6 +160,39 @@ long os_run(struct cmdline *c)
 
 int os_which(const char *name, char *buf, int size) { return run_which(name, buf, size); }
 
+/* Is the system Shell csh? Its code (the "shell" entry's seglist) holds
+ * "$VER: csh" (csh, cshell). Looked at once per seglist: the hunks are
+ * read, ~140 KB, under Forbid only as long as the entry is found. */
+int os_shell_is_csh(void)
+{
+    static BPTR seen;
+    static int yes;
+    struct Segment *s;
+    BPTR seg;
+    Forbid();
+    s = FindSegment("shell", NULL, TRUE);
+    seg = s ? s->seg_Seg : 0;
+    Permit();
+    if (!seg) return 0;
+    if (seg != seen) {
+        static const char want[] = "$VER: csh";
+        BPTR h;
+        seen = seg;
+        yes = 0;
+        for (h = seg; h && !yes; h = *(BPTR *)BADDR(h)) {
+            const char *d = (const char *)BADDR(h) + 4;
+            ULONG n = ((ULONG *)BADDR(h))[-1], i;   /* the hunk's size, its header counted */
+            if (n < 16) continue;
+            n -= 8;
+            for (i = 0; i + sizeof want - 1 <= n; i++)
+                if (d[i] == '$' && !memcmp(d + i, want, sizeof want - 1)) { yes = 1; break; }
+        }
+    }
+    return yes;
+}
+
+int os_mkscript(const char *name) { return SetProtection((STRPTR)name, FIBF_SCRIPT) != 0; }
+
 /* read -n/-N/-t/-s: up to n characters (n 0: a line), the Return ending
  * it unless exact; ticks: fiftieths to wait at most (-1 for ever); silent:
  * nothing echoed. A console is put in raw mode for -n and -s (the keys one

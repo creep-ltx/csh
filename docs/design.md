@@ -226,8 +226,20 @@ SYS_UserShell, Run and NewShell all run cshell; System()'s rc comes back (Quit 7
 with no `shell=` line: every tab IS cshell (~143 KB a tab, was ~154 with csh on top), `exit` closes
 the tab in one go, quitting CTerm ends its tab Shells. langtest, jobtest, cmdline green, 10 System()
 shells leave 0 bytes. Not yet tried: setting it from S:User-Startup during the boot (the boot Shell
-must stay the ROM's: "csh in a ROM"). Next steps (agreed): (2) background jobs and `csh FROM/COMMAND`
-without starting C:csh as a command, (3) a safe stop when the Shell file is started as a command,
+must stay the ROM's: "csh in a ROM").
+**Step 2 done (FS-UAE)**: nothing starts C:csh when the system Shell is csh. os_shell_is_csh()
+(os.c: "$VER: csh" in the "shell" entry's hunks, looked at once per seglist) decides: a job or a
+pipe's middle of csh's own (ownstage) is the same #!csh T: script with the s bit, a #!csh script
+as a stage likewise (run_prepare: romline = the script, p->usershell), both handed to
+SystemTags(..., SYS_UserShell) - the system Shell (csh) runs them; NP_CopyVars brings the local
+variables and aliases (seen: x=5 and an alias in a `f &`). Otherwise the old `C:csh FROM`.
+`csh FROM file [args]`, `csh COMMAND text` (`-c`, `-C`) and `csh` alone are csh's own command
+(lang_csh: a subshell, `( source ... )` or `( Execute ... )`) in its language and by the Amiga's
+rules (run.c builtin(): ReadArgs "FROM,ARGS/M,COMMAND=-C/K" - a plain `C=-C` alias took an
+argument "C" as the keyword). Tested with no C:csh at all: jobs, loops and functions in pipes, a
+#!csh stage, csh -c/FROM/COMMAND through wasabi run (rc kept); and the fallback (ROM Shell, C:csh):
+all tests green in both, bench unchanged. PC tests 291.
+Next steps (agreed): (3) a safe stop when the Shell file is started as a command,
 (4) cshell renamed csh, one build, User-Startup does REPLACE + useshell + execshell, CTerm drops
 shell=csh (with the CTerm session).
 

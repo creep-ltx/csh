@@ -3574,9 +3574,13 @@ static int ownstage(Arena *ar, Node *n, struct cmdline *c, void *job)
     Arr *a;
     int i;
     char name[40];
-    const char *self = os_self();
-    if (!*self) return 0;                         /* said (cshell without its C:csh) */
-    if (strlen(self) >= sizeof c->cmd || !os_exists(self)) { sh_error("csh's own command in a process of its own needs C:csh:", n->src ? n->src : ""); return 0; }
+    const char *self = NULL;
+    int viashell = os_shell_is_csh();     /* the system Shell runs the #!csh script: no C:csh started */
+    if (!viashell) {
+        self = os_self();
+        if (!*self) return 0;                         /* said (cshell without its C:csh) */
+        if (strlen(self) >= sizeof c->cmd || !os_exists(self)) { sh_error("csh's own command in a process of its own needs C:csh:", n->src ? n->src : ""); return 0; }
+    }
     memset(&t, 0, sizeof t); t.ar = ar;
     sput(&t, "#!csh\n", 6);
     if (sh_opt_e) sput(&t, "set -e\n", 7);
@@ -3612,10 +3616,16 @@ static int ownstage(Arena *ar, Node *n, struct cmdline *c, void *job)
     sputc(&t, '\n');
     if (!os_tempfile(t.s, t.n, name, sizeof name)) { sh_error("cannot write the script for", n->src ? n->src : ""); return 0; }
     os_job_tmp(job, name);
-    strcpy(c->cmd, self);
-    strcpy(c->args, "FROM ");
-    strcat(c->args, name);
-    strcat(c->args, "\n");
+    if (viashell) {             /* the script itself, s bit on: run_prepare gives it to the system Shell */
+        if (!os_mkscript(name)) { sh_error("cannot mark as a script:", name); return 0; }
+        strcpy(c->cmd, name);
+        strcpy(c->args, "\n");
+    } else {
+        strcpy(c->cmd, self);
+        strcpy(c->args, "FROM ");
+        strcat(c->args, name);
+        strcat(c->args, "\n");
+    }
     c->arglen = strlen(c->args);
     return 1;
 }
@@ -4408,6 +4418,41 @@ long lang_source(const char *path, int argc, char **argv)
     sh_return = 0;
     os_free(text);
     setrc(r);
+    return r;
+}
+
+/* csh FROM file [args], csh COMMAND text, csh -c text, typed in csh (its
+ * language or the Amiga's rules): run here, in a subshell - what bash's
+ * "bash -c" and "bash file" give - without starting csh as a command (csh
+ * is the system Shell: the file cannot be both). A #!csh file is sourced,
+ * any other an Amiga script (Execute). csh alone: there is nothing to start. */
+long lang_csh(int argc, char **argv)
+{
+    Arena ar = { NULL };
+    Str t;
+    int i = 1;
+    long r;
+    memset(&t, 0, sizeof t); t.ar = &ar;
+    if (argc < 2) {
+        sh_print("csh: this is csh (NewShell opens another Shell; csh -c TEXT, csh FROM FILE)\n");
+        return 0;
+    }
+    if ((!strcmp(argv[1], "-c") || veq(argv[1], "COMMAND")) && argc > 2) {
+        sput(&t, "(\n", 2);
+        for (i = 2; i < argc; i++) { if (i > 2) sputc(&t, ' '); sput(&t, argv[i], strlen(argv[i])); }
+        sput(&t, "\n)", 2);
+    } else {
+        const char *f;
+        if (veq(argv[1], "FROM") && argc > 2) i = 2;
+        f = argv[i++];
+        sput(&t, lang_isscript(f) ? "( source " : "( Execute ", lang_isscript(f) ? 9 : 10);
+        shq(&t, f);
+        for (; i < argc; i++) { sputc(&t, ' '); shq(&t, argv[i]); }
+        sput(&t, " )", 2);
+    }
+    sputc(&t, 0);
+    r = lang_eval(t.s);
+    afree(&ar);
     return r;
 }
 

@@ -49,6 +49,8 @@ struct prepared {
     BPTR progdir;
     LONG stack;
     char romline[512];          /* a script: the line for the ROM Shell */
+    int usershell;              /* romline for the system Shell (System() SYS_UserShell): a #!csh
+                                 * script when that Shell is csh (os_shell_is_csh) */
 };
 int run_prepare(struct cmdline *c, struct prepared *p);
 int run_exists(const char *name);
@@ -66,7 +68,7 @@ int job_spawn_prepared(void *job, struct cmdline *c, long in, long out, struct p
 long job_lastrun_prepared(void *job, struct cmdline *c, long in, struct prepared *p);
 
 /* lang.c: the csh language */
-int lang_isscript(const char *path);              /* "#!csh" on its first line */
+
 LONG lang_runscript(const char *path, struct cmdline *c);
 int lang_line(const char *line, int interactive); /* a line typed at the prompt */
 extern int lang_more;                             /* lang_line wants another line */

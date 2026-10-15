@@ -30,7 +30,9 @@ void os_tty(const char *s, int n);               /* to csh's own console, whatev
 void os_err(const char *s, int n);               /* the error stream of the moment (2>, else the console) */
 int os_readline(char *buf, int size);            /* from the input of the moment; -1 = end */
 int os_readkeys(char *buf, int size, int n, int exact, long ticks, int silent);  /* read -n -N -t -s: -1 end, -2 time out */
-int os_which(const char *name, char *buf, int size);   /* an Amiga command's file (command -v); 0 = none */
+int os_which(const char *name, char *buf, int size);
+int os_shell_is_csh(void);                       /* the system Shell ("shell") is csh's code */
+int os_mkscript(const char *name);               /* the s bit on (a #!csh file for the system Shell) */   /* an Amiga command's file (command -v); 0 = none */
 void *os_redir(struct cmdline *c);               /* open + select; NULL = failed (said) */
 void os_unredir(void *save);
 void *os_capture(void);                          /* $(...): the output to a file */
@@ -96,6 +98,8 @@ void lang_reset(void);                    /* the unfinished command thrown away 
 void lang_end(void);                      /* csh ends: functions, $1.., the pending text freed */
 extern int lang_more;
 long lang_source(const char *path, int argc, char **argv);
+int lang_isscript(const char *path);       /* "#!csh" on its first line */
+long lang_csh(int argc, char **argv);    /* csh FROM file [args] / COMMAND text / -c text: a subshell, no new process */
 void sh_print(const char *s);
 void sh_printn(const char *s, int n);
 void sh_error(const char *a, const char *b);     /* "csh: a b" */

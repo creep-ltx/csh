@@ -316,6 +316,12 @@ int main(void)
     run("echo $! \"$!\"; kill $!", "%2 %2\n[kill]\n");
     run("wait $!; wait -n; wait %1 %3; wait 5", "[wait %2]\n[wait -n]\n[wait %1]\n[wait %3]\n[wait|5]\n");
     run("disown; disown %1; disown -a", "[disown ]\n[disown %1]\n[disown -a]\n");
+    /* csh -c / COMMAND / FROM: csh itself, a subshell (step 2 to one csh) */
+    run("x=1; csh -c 'echo in $x; x=2; cd /'; echo out $x", "in 1\nout 1\n");
+    run("csh COMMAND 'echo a; exit 4'; echo rc $?", "a\nrc 4\n");
+    { FILE *f = fopen("/tmp/csh-from-test", "w"); fputs("#!csh\necho \"from $1 $2\"; y=9\n", f); fclose(f); }
+    run("csh FROM /tmp/csh-from-test a 'b c'; echo [$y]; csh /tmp/csh-from-test d", "from a b c\n[]\nfrom d \n");
+    run("csh", "csh: this is csh (NewShell opens another Shell; csh -c TEXT, csh FROM FILE)\n");
     run("v=out; f() { declare v=in; echo $v; }; f; echo $v", "in\nout\n");
     run("x='a  b'; f() { local y=$x; echo \"$y\"; }; f", "a  b\n");
     run("trap 'echo bye' EXIT; trap; trap - EXIT; trap", "trap -- 'echo bye' EXIT\n");

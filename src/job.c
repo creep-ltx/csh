@@ -165,7 +165,8 @@ void stage_entry(void)
         }
         if (st->p.progdir) SetProgramDir(olddir);
     } else {
-        rc = SystemTags(st->p.romline, SYS_Input, Input(), SYS_Output, Output(), TAG_END);
+        rc = SystemTags(st->p.romline, SYS_Input, Input(), SYS_Output, Output(),
+                        SYS_UserShell, st->p.usershell, TAG_END);
         r2 = IoErr();
     }
     Flush(Output());
