@@ -192,6 +192,31 @@ saved layout can start the program again with its arguments.
    loading parts on demand (csh is 80 KB; the language could be a part); what the user finds.
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
+## Ctrl-Z (2026-10-15: looked at, not done; the user to decide)
+
+A program started from csh runs on csh's own process (RunCommand, as the ROM Shell does): while it
+runs, csh is not running at all, so there is nobody to see a Ctrl-Z. Exec has no way to stop a task:
+taking it off the ready list (Disable, Remove) freezes it, and a program frozen while it holds a
+semaphore (layers, a filesystem) hangs everything that waits on that. Possible later, safely: run a
+foreground command in a process of its own (as a pipe stage) and let Ctrl-Z put it in the background
+(not stopped - "bg" at once), costing a process per command; or only for pipes, whose stages already
+run apart.
+
+## Memory per window (measured 2026-10-15, FS-UAE a1200-32-mui5, Avail TOTAL around NewShell)
+
+| What runs in the window | Bytes |
+|---|---|
+| the ROM Shell | ~40 000 (the CON: window, console, Shell) |
+| the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
+| cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
+
+csh's own part of a window: its code 145 KB (each csh loads its own; cshell's is shared), its 64 KB
+stack (main.c STACKSZ, StackSwap), ~50 KB of fixed buffers (bss: comp 14, edit 12.5, run 7, term 6.5
+KB...). **So loading the language on first use saves nothing at the prompt** (the first typed line
+needs it). What would: (a) CTerm tabs without `shell=csh` where cshell is the system Shell (the
+A1200 since 0.1b5): -145 KB a tab; (b) a smaller stack (32 KB: -32 KB a window; deep functions to be
+tested); (c) the biggest buffers allocated when first used.
+
 ## Decided while building (2026-10-13)
 
 - **false is 1** (`test`, `!`, `false`): bash's value; `&&`, `||`, `if` take 0 as true and any
