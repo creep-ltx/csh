@@ -218,6 +218,8 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+**0.1b10 INSTALLED on the A1200 2026-10-15** (the user said yes; C:csh-0.1b9.bak, C:cshell-0.1b9.bak
+kept; REPLACE + useshell; a new window there: functions 57 deep at the prompt, then "too deep").
 **0.1b10 (2026-10-15, the user: "maybe 32 KB is enough?"): stack 32 KB, a cshell window ~123 KB
 (was 155).** First measured how deep things go (tests: a function calling itself, nested `$( )`,
 `{ }`, `if`, `(( ))`): 0.1b9 had made run_simple's frame 1660 bytes (cmd_v inlined into it; was
