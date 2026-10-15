@@ -339,6 +339,10 @@ long job_list(void) { os_write("[jobs]\n", 7); return 0; }
 long job_fg(const char *s) { (void)s; os_write("[fg]\n", 5); return 0; }
 long job_kill(const char *s) { (void)s; os_write("[kill]\n", 7); return 0; }
 long job_waitall(void) { os_write("[wait]\n", 7); return 0; }
+long job_wait(const char *s) { char b[64]; snprintf(b, sizeof b, "[wait %s]\n", s); os_write(b, strlen(b)); return 0; }
+long job_waitany(void) { os_write("[wait -n]\n", 10); return 0; }
+long job_disown(const char *s) { char b[64]; snprintf(b, sizeof b, "[disown %s]\n", s ? s : ""); os_write(b, strlen(b)); return 0; }
+int job_lastbg(void) { return 2; }
 int fake_h_reset(void) { fakeh = 10; lasttemp = 50; hdk = 0; return 0; }
 long os_lastrun(void *j, struct cmdline *c, long in, void *prep)
 {

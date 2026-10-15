@@ -50,6 +50,11 @@ leaves after it; redirections alone: kept until the language ends); `read -n N`,
 `-t SECS` (0.5 too; time out = 142), `-s` (os_readkeys: raw mode on a console, echoes itself,
 Backspace with -s), options together (-rs, -n1). PC tests 284; `tests/readtest.sh` types into a
 CON: window.
+**Also in 0.1b9, jobs:** `$!` = the last background job as `%n` (so `kill $!` and `wait $!` work;
+a number would be the Amiga's `wait 5`); `wait -n` (the first to end); `wait %n` quiet (was
+fg's); a job already collected (wait -n, "Done", jobs) still answers `wait %n` with its rc
+(the last 8, as bash keeps them); `disown [%n | -a]` (runs on, out of the list, reaped quietly;
+job_leave keeps csh's code for them too). Test: `tests/jobtest.sh`.
 
 **0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
 C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
@@ -115,7 +120,7 @@ saved layout can start the program again with its arguments.
 **What csh still lacks** (the list to work from):
 - size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
   modular, load on demand); never measured slower to start (84 ms either way on the A1200).
-- jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C; `$!`, `disown`, `wait -n` missing.
+- jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C (see "Ctrl-Z" below).
 - completion: the menu does not mark the name in the list; `**/` (globstar), extglob.
 - `read -d`, `declare -n` (namerefs), `${x@A}`, `${x@P}`; `exec` cannot replace csh (no exec on
   the Amiga): it runs the command and leaves.

@@ -1857,6 +1857,11 @@ static int getparam(Exp *e, const char *name, int n, Str *val)
     if (n == 1 && name[0] == '?') { sput(val, b, ltoa_(rc, b)); return 1; }
     if (n == 1 && name[0] == '#') { sput(val, b, ltoa_(npos, b)); return 1; }
     if (n == 1 && name[0] == '$') { sput(val, b, ltoa_(os_number(), b)); return 1; }
+    if (n == 1 && name[0] == '!') {             /* $!: the last background job, as %n (kill $!, wait $!) */
+        int k = job_lastbg();
+        if (k) { sputc(val, '%'); sput(val, b, ltoa_(k, b)); }
+        return 1;
+    }
     if (n == 1 && name[0] == '0') { sput(val, pos0, strlen(pos0)); return 1; }
     if (n == 1 && name[0] == '-') {             /* the options on: $- */
         if (sh_opt_e) sputc(val, 'e');
@@ -2303,7 +2308,7 @@ static int dollar(Exp *e, const char *s, int n, int inquotes)
         }
         return 2;
     }
-    if (n >= 2 && (s[1] == '?' || s[1] == '#' || s[1] == '$' || s[1] == '*' || s[1] == '@' || s[1] == '-' || (s[1] >= '0' && s[1] <= '9'))) {
+    if (n >= 2 && (s[1] == '?' || s[1] == '#' || s[1] == '$' || s[1] == '*' || s[1] == '@' || s[1] == '-' || s[1] == '!' || (s[1] >= '0' && s[1] <= '9'))) {
         Str v;
         memset(&v, 0, sizeof v); v.ar = e->ar;
         if (getparam(e, s + 1, 1, &v)) addtext(e, v.s ? v.s : "", v.n, inquotes);

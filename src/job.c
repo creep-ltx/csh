@@ -94,6 +94,27 @@ static void *mya4(void) { register void *r __asm__("a4"); return r; }
 static ULONG donesig;
 static int donebit = -1;
 static struct job *jobs;
+static struct job *disowned;    /* disown: running on, reaped quietly when done */
+static int lastbg;              /* $! */
+/* the rc of jobs already given back (wait -n, "Done"), for a wait %n after:
+ * bash answers that too. A number taken by a new job forgets its old rc. */
+#define NDONE 8
+static struct { int id; LONG rc; } done_[NDONE];
+static int ndone_;
+
+static void remember(int id, LONG rc)
+{
+    done_[ndone_ % NDONE].id = id;
+    done_[ndone_ % NDONE].rc = rc;
+    ndone_++;
+}
+
+static int recalled(int id, LONG *rc)
+{
+    int i;
+    for (i = 0; i < NDONE; i++) if (done_[i].id == id) { *rc = done_[i].rc; done_[i].id = 0; return 1; }
+    return 0;
+}
 static long pipek;
 
 static void hexto(char *d, ULONG v)
@@ -470,6 +491,7 @@ long os_job_end(void *job, long lastrc, int lastinternal, long *rcs, int *nrcs)
     }
     if (!j->st) { reap(j, NULL); FreeVec(j); return lastrc; }
     addjob(j);
+    lastbg = j->id;
     {
         char b[16];
         struct stage *s;
@@ -499,6 +521,10 @@ static void addjob(struct job *j)
     }
     j->id = id;
     j->bg = 1;
+    {   /* the number's old rc is not this job's */
+        int i;
+        for (i = 0; i < NDONE; i++) if (done_[i].id == id) done_[i].id = 0;
+    }
     j->next = NULL;
     for (p = &jobs; *p; p = &(*p)->next) ;
     *p = j;
@@ -681,15 +707,30 @@ int job_count(void)
     return n;
 }
 
+int job_lastbg(void) { return lastbg; }
+
+/* the disowned that are done: given back, nothing said */
+static void reapdisowned(void)
+{
+    struct job *j, *n, **p = &disowned;
+    for (j = disowned; j; j = n) {
+        n = j->next;
+        if (alldone(j)) { *p = n; reap(j, NULL); FreeVec(j); }
+        else p = &j->next;
+    }
+}
+
 void job_news(void)
 {
     struct job *j, *n;
+    reapdisowned();
     for (j = jobs; j; j = n) {
         n = j->next;
         if (alldone(j)) {
             LONG rc;
             unlink_(j);
             rc = reap(j, NULL);
+            remember(j->id, rc);
             say(j, "Done", rc);
             FreeVec(j);
         }
@@ -701,6 +742,7 @@ int job_running(void)
 {
     struct job *j;
     for (j = jobs; j; j = j->next) if (!alldone(j)) return 1;
+    for (j = disowned; j; j = j->next) if (!alldone(j)) return 1;
     return 0;
 }
 
@@ -713,6 +755,7 @@ long job_list(void)
             LONG rc;
             unlink_(j);
             rc = reap(j, NULL);
+            remember(j->id, rc);
             say(j, "Done", rc);
             FreeVec(j);
         } else say(j, "Running", 0);
@@ -744,6 +787,59 @@ long job_kill(const char *spec)
     return 0;
 }
 
+/* wait %n: as fg, without the job's line */
+long job_wait(const char *spec)
+{
+    struct job *j = jobfind(spec);
+    LONG old;
+    long id;
+    if (!j && StrToLong((STRPTR)(spec[0] == '%' ? spec + 1 : spec), &id) > 0 && recalled(id, &old)) return old;
+    if (!j) { sh_error("wait: no such job", spec); return 127; }
+    if (waitjob(j)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
+    unlink_(j);
+    {
+        LONG rc = reap(j, NULL);
+        FreeVec(j);
+        return rc;
+    }
+}
+
+/* wait -n: whichever job ends first; its rc. Ctrl-C stops waiting. */
+long job_waitany(void)
+{
+    struct job *j;
+    if (!jobs) return 127;
+    jobinit();
+    for (;;) {
+        for (j = jobs; j; j = j->next)
+            if (alldone(j)) {
+                LONG rc;
+                unlink_(j);
+                rc = reap(j, NULL);
+                remember(j->id, rc);
+                FreeVec(j);
+                return rc;
+            }
+        if (Wait(donesig | SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) return 20;
+    }
+}
+
+/* disown: the job runs on, out of the list (jobs, fg, wait, "Done" leave
+ * it); its memory is given back once it ends. -a: all of them. */
+long job_disown(const char *spec)
+{
+    struct job *j;
+    if (spec && !strcmp(spec, "-a")) {
+        while ((j = jobs)) { unlink_(j); j->next = disowned; disowned = j; }
+        return 0;
+    }
+    if (!(j = jobfind(spec))) { sh_error("disown: no such job", spec ? spec : ""); return 1; }
+    unlink_(j);
+    j->next = disowned;
+    disowned = j;
+    return 0;
+}
+
 long job_waitall(void)
 {
     struct job *j;
@@ -769,12 +865,16 @@ void job_leave(void)
         Forbid();
         for (j = jobs; j; j = j->next)
             for (s = j->st; s; s = s->next) s->parent = NULL;
+        for (j = disowned; j; j = j->next)
+            for (s = j->st; s; s = s->next) s->parent = NULL;
         Permit();
         relaystop();
         return;
     }
     for (j = jobs; j; j = n) { n = j->next; reap(j, NULL); FreeVec(j); }
     jobs = NULL;
+    for (j = disowned; j; j = n) { n = j->next; reap(j, NULL); FreeVec(j); }
+    disowned = NULL;
     if (donebit >= 0) FreeSignal(donebit);
     donebit = -1;
     relaystop();

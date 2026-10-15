@@ -312,6 +312,10 @@ int main(void)
     run("f() { :; }; alias ll='List DIRS'; command -V f echo List ll", "f is a function\necho is a shell builtin\nList is C:List\nll is aliased to `List DIRS'\n");
     run("x=$(exec List y; echo not); echo \"[$x]\" $?", "[[List|y]] 0\n");
     run("( exec false; echo not ); echo $?", "1\n");
+    /* $!, wait -n, wait %n, disown (0.1b9; the fake's last job is %2) */
+    run("echo $! \"$!\"; kill $!", "%2 %2\n[kill]\n");
+    run("wait $!; wait -n; wait %1 %3; wait 5", "[wait %2]\n[wait -n]\n[wait %1]\n[wait %3]\n[wait|5]\n");
+    run("disown; disown %1; disown -a", "[disown ]\n[disown %1]\n[disown -a]\n");
     run("v=out; f() { declare v=in; echo $v; }; f; echo $v", "in\nout\n");
     run("x='a  b'; f() { local y=$x; echo \"$y\"; }; f", "a  b\n");
     run("trap 'echo bye' EXIT; trap; trap - EXIT; trap", "trap -- 'echo bye' EXIT\n");

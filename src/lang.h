@@ -81,6 +81,10 @@ long job_list(void);                     /* jobs */
 long job_fg(const char *spec);           /* fg [%n] */
 long job_kill(const char *spec);         /* kill [%n]: Ctrl-C to each stage */
 long job_waitall(void);                  /* wait */
+long job_wait(const char *spec);         /* wait %n: that one, quietly */
+long job_waitany(void);                  /* wait -n: the first to end; 127 when there are none */
+long job_disown(const char *spec);       /* disown [%n | -a]: runs on, not csh's any more */
+int job_lastbg(void);                    /* $!: the last job put in the background (its %n), 0 none */
 
 /* ---- lang.c ---- */
 struct shfield { char *s; int len; char quoted, pattern; };
