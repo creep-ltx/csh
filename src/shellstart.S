@@ -11,9 +11,9 @@
 |  - No Workbench path, no command line (a shell has none).
 |  - __keepdata set: the data stays allocated at the end (jobs csh leaves
 |    running use it).
-|  - Built with -DCSH_CMDSTART (csh, "Resident csh C:csh"): started as a
-|    command, so no start-up packet to wait for and no BootShell check;
-|    __shellpkt stays 0 and main.c runs as plain csh, the code shared.
+|  - Never started as a command: it would wait here for a packet that
+|    never comes. So the file is L:csh with the e bit off (docs/design.md
+|    "One csh"); a start told apart at run time was tried and not safe.
 |
 | Two entries for code that runs in other tasks of csh's (job.c): they
 | have no a4 of their own.
@@ -80,15 +80,12 @@ ours:		movem.l	(sp)+,d0/a0
 		movel	4:W,a6
 		movel	a6@(ThisTask:W),a3
 
-		subl	a2,a2			| no packet (csh: a command)
-#ifndef CSH_CMDSTART
 | the start-up packet: before anything else touches the port
 		lea	a3@(pr_MsgPort:L),a0
 		jsr	a6@(.LVOWaitPort:L)
 		lea	a3@(pr_MsgPort:L),a0
 		jsr	a6@(.LVOGetMsg:L)
 		movel	d0,a2			| the message; its ln_Name is the packet
-#endif
 
 		btst.b	#1,1+Attn(a6)
 		jne	cpuok
@@ -126,10 +123,7 @@ no_reloc:	lea	a4@(0x7ffe:L),a4
 
 		movel	sp,a4@(___SaveSP:L)
 		movel	a6,a4@(_SysBase:L)
-		movel	a2,d0
-		beq	nopkt
 		movel	a2@(ln_Name:W),a4@(__shellpkt:L)
-nopkt:
 		lea	emptyline,a0
 		movel	a0,a4@(___commandline:L)
 		movql	#1,d0
@@ -175,13 +169,11 @@ todos:
 | no memory (or no 68020): the packet goes back as it came (the Guru
 | Book's emergency exit), the caller is not left waiting
 nomem:
-		movel	a2,d0
-		beq	nomem1			| a command: nothing to give back
 		movel	a2,a1
 		movel	a1@(ln_Name:W),a0
 		movel	a0@(dp_Port:W),a0
 		jsr	a6@(.LVOPutMsg:L)
-nomem1:		movel	d7,d0
+		movel	d7,d0
 		rts
 
 ___restore_a4: .globl ___restore_a4

@@ -12,8 +12,9 @@ unset CSHT
 GetEnv CSHT >NIL: || echo gone from ENV:
 [ -d "" ] && echo empty-is-a-dir || echo empty-is-nothing
 x=$(printf %d abc); echo "[$x]"
+RAM:rcx 0 | RAM:pcat >NIL:     # the first pipe takes csh's two job signals (kept till csh ends)
 RAM:sigs
-for i in {1..25}; do RAM:csh COMMAND 'RAM:rcx 0 | RAM:pcat' >NIL:; done
+for i in {1..25}; do csh COMMAND 'RAM:rcx 0 | RAM:pcat' >NIL:; done
 RAM:sigs
 RAM:rcx 0 | RAM:pcat && echo pipes still work
 printf '#!csh\nwhile read l; do echo got $l; done\n' > RAM:cs

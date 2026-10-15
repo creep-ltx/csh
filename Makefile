@@ -9,48 +9,32 @@ CFLAGS  = -Os -m68020 -noixemul -fomit-frame-pointer -fno-common -fbbb=- -Wall -
 LDFLAGS = -noixemul -s
 SRC     = src/main.c src/run.c src/line.c src/term.c src/keys.c src/prefs.c src/hist.c src/comp.c src/edit.c src/lang.c src/builtin.c src/os.c src/job.c src/regex.c src/bang.c
 
-# cshell: csh as the system's user shell (Resident shell C:cshell REPLACE):
-# pure, so -resident32 (every Shell window a copy of the data, a4 at it)
-# and its own start-up, src/shellstart.S (the start-up packet first).
+# csh is the system's Shell, one file: L:csh (out of the command search,
+# the e bit off - started as a command it would wait for a start-up packet
+# for ever), "Resident shell L:csh REPLACE" and "useshell" in
+# S:User-Startup (docs/design.md "One csh"). Pure, so -resident32 (every
+# Shell window a copy of the data, a4 at it), and its own start-up,
+# src/shellstart.S (the start-up packet first).
 SOBJ    = $(patsubst src/%.c,build-shell/%.o,$(SRC))
 SFLAGS  = $(CFLAGS) -resident32 -DCSH_USERSHELL
 
-all: csh cshell useshell
+all: csh useshell
 
-cshell: build-shell/shellstart.o $(SOBJ)
+csh: build-shell/shellstart.o $(SOBJ)
 	$(CC) -noixemul -resident32 -m68020 -nostartfiles -s build-shell/shellstart.o $(SOBJ) $(SLIBS) -o $@
 
 build-shell/shellstart.o: src/shellstart.S
 	@mkdir -p build-shell
 	$(CC) -m68020 -c $< -o $@
 
-# csh: the same code started as a command - pure too, so "Resident csh
-# C:csh" makes one copy in memory serve every csh started from a Shell
-# (CTerm's shell=csh tabs). Its own start-up (no start-up packet) and its
-# own main.o (the $VER says csh). One file for both Shell and command was
-# tried and is not safe: a start cannot be told apart at run time (System()
-# Shells come with a CLI, cli_Module set too).
-COBJ    = build-shell/main-csh.o $(filter-out build-shell/main.o,$(SOBJ))
-
-csh: build-shell/cmdstart.o $(COBJ)
-	$(CC) -noixemul -resident32 -m68020 -nostartfiles -s build-shell/cmdstart.o $(COBJ) $(SLIBS) -o $@
-
-build-shell/main-csh.o: src/main.c src/csh.h src/line.h src/edit.h src/lang.h
-	@mkdir -p build-shell
-	$(CC) $(SFLAGS) -DCSH_CMDSTART -c $< -o $@
-
-build-shell/cmdstart.o: src/shellstart.S
-	@mkdir -p build-shell
-	$(CC) -m68020 -DCSH_CMDSTART -c $< -o $@
-
-# useshell: after "Resident shell C:cshell REPLACE" with cshell already the
-# Shell, makes the new code the one new Shells run (tools/useshell.c)
+# useshell: after "Resident shell L:csh REPLACE", every Shell runs that code:
+# the system "shell" entry and Execute()'s (BootShell) (tools/useshell.c)
 useshell: tools/useshell.c
 	$(CC) -Os -noixemul -s tools/useshell.c -o $@
 
-# cshell-ext.rom: cshell as a ROM module, for the emulator (tests/romuae.sh)
-cshell-ext.rom: cshell build-shell/rominit.bin tools/mkextrom.py
-	python3 tools/mkextrom.py cshell build-shell/rominit.bin $@
+# cshell-ext.rom: csh as a ROM module, for the emulator (tests/romuae.sh)
+cshell-ext.rom: csh build-shell/rominit.bin tools/mkextrom.py
+	python3 tools/mkextrom.py csh build-shell/rominit.bin $@
 
 build-shell/rominit.bin: src/rominit.S
 	@mkdir -p build-shell
@@ -66,6 +50,6 @@ test:
 	tests/run.sh
 
 clean:
-	rm -rf build build-shell csh cshell useshell
+	rm -rf build build-shell csh useshell
 
 .PHONY: all test clean

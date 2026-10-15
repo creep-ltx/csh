@@ -30,11 +30,7 @@
 #define DBG(x)
 #endif
 
-#if defined(CSH_USERSHELL) && !defined(CSH_CMDSTART)
-static const char version[] = "$VER: cshell " CSH_VERSION " (" CSH_DATE ")";
-#else
 static const char version[] = "$VER: csh " CSH_VERSION " (" CSH_DATE ")";
-#endif
 
 struct csh csh;
 
@@ -64,7 +60,6 @@ static int shell_init(void)
     struct Process *pr = (struct Process *)FindTask(NULL);
     BPTR *seg = BADDR(pr->pr_SegList);
     LONG newcli;
-    if (!dp) return 1;          /* started as a command (shellstart.S): plain csh, the code shared */
     if (dp->dp_Res2) { ReplyPkt(dp, dp->dp_Res1, dp->dp_Res2); return 0; }   /* a start not defined yet */
     newcli = dp->dp_Res1;
     if (!seg[4]) { seg[4] = seg[3]; seg[3] = 0; }      /* room for the commands' seglists */
@@ -87,7 +82,6 @@ static void shell_end(void)
 {
     struct CommandLineInterface *cli = Cli();
     BPTR cd;
-    if (!_shellpkt) return;     /* a command: the Shell it runs in owns all that */
     if (!(shflags & FNF_VALIDFLAGS)) {
         if (cli->cli_StandardInput) Close(cli->cli_StandardInput);
         if (cli->cli_StandardOutput) { Flush(cli->cli_StandardOutput); Close(cli->cli_StandardOutput); }

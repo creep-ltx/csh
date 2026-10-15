@@ -10,8 +10,8 @@ gone from ENV:
 empty-is-nothing
 csh: printf: not a number: abc
 [0]
-sigalloc 0000FFFF
-sigalloc 0000FFFF
+sigalloc C000FFFF
+sigalloc C000FFFF
 pcat 0
 pipes still work
 got hi

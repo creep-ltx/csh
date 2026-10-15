@@ -3,7 +3,7 @@
 # csh FROM a script on a test Amiga (W=...). The CLI numbers a job prints
 # when it starts ([1] 7) are taken out before comparing.
 cd "$(dirname "$0")"; W=${W:-probe/w}
-$W put ../csh RAM:csh >/dev/null || exit 2
+. ./install.sh || exit 2
 cat > /tmp/jobtest.$$ <<'CSH'
 #!csh
 Wait 4 &
@@ -22,7 +22,7 @@ Wait 2
 echo "h end"
 CSH
 $W put /tmp/jobtest.$$ RAM:jobtest.csh >/dev/null; rm -f /tmp/jobtest.$$
-got=$($W run 'RAM:csh FROM RAM:jobtest.csh' 2>&1 | sed -E 's/^\[([0-9]+)\]( [0-9]+)+$/[\1] N/')
+got=$($W run 'csh FROM RAM:jobtest.csh' 2>&1 | sed -E 's/^\[([0-9]+)\]( [0-9]+)+$/[\1] N/')
 want='[1] N
 a %1
 [2] N

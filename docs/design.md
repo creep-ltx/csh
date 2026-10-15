@@ -218,6 +218,29 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
+
+- **One file, `L:csh`**: the Shell build (shellstart.S takes DOS's start-up packet), pure, the e bit
+  off. Not a command: nothing searches L:, and `L:csh` typed says "not executable" (run as a
+  command it would wait for a packet for ever - it took the test machine down).
+- **S:User-Startup**, first: `Resident shell L:csh REPLACE` and `useshell` (tools/useshell.c: the
+  system "shell" entry and Execute()'s BootShell entry both get that code). The boot Shell itself
+  stays the ROM's (it runs the Startup-Sequence, and only it puts the internal commands into the
+  resident list). Every Shell after: NewShell, the Shell icon, Run, System() both ways, Execute(),
+  CTerm's tabs (no `shell=` line needed). **Verified with a real reboot** (a1200-32-mui5): the
+  entries point at csh, Workbench up, wasabid (started by Run after the block) through csh, a
+  window and a CTerm tab are csh.
+- Nothing starts csh as a command: `csh FROM/COMMAND/-c` and `csh` alone are csh's own command; a
+  job or pipe stage of csh's own and a #!csh stage go to the system Shell (step 2 below).
+- Updating: the same two lines; Shells already open keep the old code (in memory till a reboot).
+- Tests: tests/install.sh (sourced by each test) does what User-Startup does; pairs.sh and
+  bench.sh first measure the ROM Shell, so they want a fresh machine (they check: probe/whoshell).
+- **Open: speed of Execute'd scripts.** csh runs a command from a script given to the ROM's
+  `Execute` (T: copy, cli_CurrentInput) ~1 ms slower than from a file it reads itself: 400
+  `Echo >NIL:` lines 3.68 s against the ROM Shell's 3.26 (bench "internal" 1.13; the others
+  0.88-1.00). Not new: 0.1b10 as cshell had it too (`csh COMMAND "Execute x"` 3.76 s, `csh FROM x`
+  read directly 2.90 s). Comment lines are not slower: it is per command. To find.
+
 **Towards ONE file, C:csh (the user's plan, 2026-10-15): step 1 done in FS-UAE** - point
 Execute()'s Shell (the BootShell entry) at cshell after the boot: `tests/probe/execshell` copies
 the system "shell" entry's seg_Seg into BootShell's. Then (tests/probe/execwho + whoshell, which

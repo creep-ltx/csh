@@ -1,27 +1,35 @@
-/* useshell - after "Resident shell FILE REPLACE" while cshell is already
- * the Shell: makes that new code the one new Shells run.
+/* useshell - makes every Shell after the boot csh: after
+ *     Resident shell L:csh REPLACE
+ * (S:User-Startup, or by hand to update), the code just loaded becomes
+ * the system's "shell" entry (NewShell, Run, System() with the user
+ * shell) and Execute()'s Shell, the BootShell entry (Execute(), a plain
+ * System() - CTerm's tabs).
  *
- * Resident REPLACE swaps the system's "shell" entry only while it is the
- * ROM's; once cshell is the Shell it adds a plain resident entry named
- * "shell" instead, which DOS never asks for (found 2026-10-15: NewShell
- * kept the old cshell). This copies that entry's code into the system
- * entry. The old code stays in memory (Shells still open run it) until a
- * reboot. */
+ * Why a tool: Resident REPLACE swaps the system "shell" entry only while
+ * it is the ROM's; once csh is the Shell it adds a plain resident entry
+ * named "shell" instead, which DOS never asks for - an update would not
+ * reach new Shells. And nothing points BootShell anywhere else. The boot
+ * Shell already runs (the ROM's code): changing the entries does not touch
+ * it. The old code stays in memory (Shells still open run it) until a
+ * reboot. docs/design.md "One csh". */
 #include <dos/dosextens.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 int main(void)
 {
-    struct Segment *sys, *user;
-    int ok = 0;
+    struct Segment *sys, *user, *boot;
+    BPTR code = 0;
     Forbid();
-    if ((sys = FindSegment("shell", NULL, TRUE)) && (user = FindSegment("shell", NULL, FALSE))
-        && sys->seg_Seg != user->seg_Seg) {
-        sys->seg_Seg = user->seg_Seg;
-        ok = 1;
+    sys = FindSegment("shell", NULL, TRUE);
+    user = FindSegment("shell", NULL, FALSE);
+    boot = FindSegment("BootShell", NULL, TRUE);
+    if (sys && boot) {
+        code = user ? user->seg_Seg : sys->seg_Seg;     /* the newest REPLACE, else the system's */
+        sys->seg_Seg = code;
+        boot->seg_Seg = code;
     }
     Permit();
-    PutStr(ok ? "new Shells run the resident \"shell\" now\n"
-              : "nothing to do (no resident \"shell\", or it is the Shell already)\n");
-    return ok ? 0 : 5;
+    if (!code) { PutStr("useshell: the shell entries are not there\n"); return 10; }
+    PutStr("every new Shell runs the resident \"shell\" now\n");
+    return 0;
 }
