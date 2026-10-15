@@ -231,7 +231,7 @@ program, Open layout brings them back (drawer and program), keys typed during `W
 it, a bracketed paste lands on the line. Seen once: a quit asked while Maki ran in a tab (and a
 second CTerm open by mistake) left the idle tabs open until `exit` in each - a clean quit with
 idle tabs ends them at once (told the CTerm session). C:csh, C:cshell and their .baks are still
-in C: (not used; the user to decide).
+C:useshell-0.1b10.bak (the setup S:User-Startup.bak-0.1b10 restores, renamed back).
 
 - **One file, `L:csh`**: the Shell build (shellstart.S takes DOS's start-up packet), pure, the e bit
   off. Not a command: nothing searches L:, and `L:csh` typed says "not executable" (run as a
