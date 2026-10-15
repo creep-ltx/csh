@@ -622,7 +622,11 @@ static long lastrun(void *job, struct cmdline *c, long in, struct prepared *p)
         moved = 1;
     }
     c->inh = in;
+    /* _CMDLINE: the pipe's whole line (its stages leave it); a line cut
+     * to fit text[] is not one to run again */
+    run_cmdline_begin(strlen(j->text) < sizeof j->text - 1 ? j->text : NULL, NULL);
     rc = p ? run_prepared(c, p) : run_cmd(c, 0);
+    run_cmdline_end();
     c->inh = 0;
     /* back where it was; none said: csh's own (never left at the relay) */
     if (moved) changesignal(con, old ? (struct MsgPort *)old : &csh.me->pr_MsgPort);

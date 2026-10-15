@@ -370,7 +370,9 @@ static void runtyped(char *line)
     long t0 = os_ticks(), d;
     char b[16];
     csh.broke = 0;
+    csh.typed = 1;
     lang_line(line, 1);
+    csh.typed = 0;
     os_flush();
     if (lang_more) return;
     d = os_ticks() - t0;

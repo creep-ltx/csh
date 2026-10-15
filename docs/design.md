@@ -17,13 +17,21 @@ note in its design.md or a message, never an edit there. Shared things:
 - **The A1200** (Wasabi): message the others before installing, rebooting or restarting wasabid;
   quit test programs and say when the screen is free. Installing in C:/LIBS: needs the user's go.
 - **Ahiru and Maki's FileColours** is on both lists: the csh session does it (in those repos), not CUtils.
-- **Next for csh, in this order:** (1) `_CMDLINE` - while a program runs, csh keeps its whole
-  command line in the local variable `_CMDLINE` (set where cli_CommandName is set in run.c,
-  removed after); the CTerm session reads it for saved layouts, so tell it when it is in and in
-  which version; (2) size - the language as a part loaded on first use; (3) jobs: Ctrl-Z, `$!`,
-  `disown`, `wait -n`; (4) completion of a keyword's value (`TO`, `LFORMAT`), menu selection;
-  (5) the small bash bits in "What csh still lacks"; (6) FileColours in Ahiru and Maki.
+- **Next for csh, in this order (the user's go, 2026-10-15: "calm and controlled"):**
+  (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) FileColours in Maki (Ahiru done, 0.3b3);
+  (3) completion of a keyword's value (`TO`, `LFORMAT`), menu selection; (4) the small bash bits
+  in "What csh still lacks"; (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
+  language as a part loaded on first use (last: it touches everything).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
+
+**0.1b9 (2026-10-15, not installed): `_CMDLINE`** - while a program started from a line typed at
+the prompt runs, csh's process has the local variable `_CMDLINE` = that line (name and arguments,
+without redirections; a pipe's whole line; a script started at the prompt keeps its own line, not
+its commands'). Gone when it ends. Not set for lines of scripts or `csh FROM` (it cost 3-8% in
+tests/bench.sh there, and CTerm has no use for them): `csh.typed`, set in runtyped(). Set in
+os_run() (the language: Execute's lines run inside it, script_now) and run_seg() (the ROM rules),
+the outermost one wins; job.c's lastrun() for pipes. Test: `tests/cmdline.sh` (types into a CON:
+window: a test Amiga of your own). Told the CTerm session.
 
 **0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
 C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,

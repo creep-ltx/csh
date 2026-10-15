@@ -7,8 +7,8 @@
 #include <dos/dosextens.h>
 #include "line.h"
 
-#define CSH_VERSION "0.1b8"
-#define CSH_DATE    "14.10.2026"
+#define CSH_VERSION "0.1b9"
+#define CSH_DATE    "15.10.2026"
 
 #ifndef CMD_INTERNAL
 #define CMD_SYSTEM   -1
@@ -22,6 +22,7 @@ struct csh {
     BPTR in, out;          /* csh's own Input()/Output(): where commands read and write */
     BPTR module;           /* csh's own seglist in cli_Module, put back after each command */
     int fromfile;          /* reading FROM a file: end when it ends */
+    int typed;             /* running a line typed at the prompt (_CMDLINE is kept) */
     int quit;              /* exit typed, or the CLI ended */
     LONG rc;               /* the last return code, csh's own at the end */
     LONG bg0;              /* cli_Background when csh started (EndCLI sets it) */
@@ -37,6 +38,8 @@ extern struct csh csh;
 /* run.c */
 void run_line(const char *line, int depth);
 LONG run_cmd(struct cmdline *c, int depth);
+void run_cmdline_begin(const char *cmd, const char *args);  /* _CMDLINE for CTerm */
+void run_cmdline_end(void);
 LONG run_internal(const char *name, const char *args, struct cmdline *redir);
 
 /* run.c: a command found and loaded for a pipe stage or a job (job.c) */

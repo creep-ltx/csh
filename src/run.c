@@ -173,6 +173,43 @@ static BPTR openredir(const char *name, LONG mode, int append)
     return Open((STRPTR)name, mode);
 }
 
+/* _CMDLINE: while a program runs, the line that started it (name and
+ * arguments, a pipe's whole line), in a local variable of csh's process -
+ * CTerm's saved layouts read it to start the program again. Only for a
+ * line typed at the prompt (in scripts it would cost time and say nothing
+ * CTerm can use); the outermost run sets it (a script started at the
+ * prompt keeps its own line, its commands leave it), the end takes it
+ * away. NULL: hold the place but set nothing (a line cut short). */
+static int cmdline_depth, cmdline_set;
+
+/* cmd and its args; args NULL: cmd is a whole line already */
+void run_cmdline_begin(const char *cmd, const char *args)
+{
+    static char b[LINE_MAX];
+    int n;
+    if (cmdline_depth++ || !cmd || !csh.typed) return;
+    if (!args) {
+        strncpy(b, cmd, sizeof b - 1);
+        b[sizeof b - 1] = 0;
+    } else {
+        if ((int)strlen(cmd) + (int)strlen(args) + 4 > (int)sizeof b) return;
+        if (strchr(cmd, ' ')) { b[0] = '"'; strcpy(b + 1, cmd); strcat(b, "\""); }
+        else strcpy(b, cmd);
+        if (*args && *args != '\n') { strcat(b, " "); strcat(b, args); }
+    }
+    n = strlen(b);
+    while (n && (b[n - 1] == '\n' || b[n - 1] == ' ')) b[--n] = 0;
+    cmdline_set = SetVar("_CMDLINE", b, -1, LV_VAR | GVF_LOCAL_ONLY);
+}
+
+void run_cmdline_end(void)
+{
+    if (cmdline_depth && !--cmdline_depth && cmdline_set) {
+        DeleteVar("_CMDLINE", LV_VAR | GVF_LOCAL_ONLY);
+        cmdline_set = 0;
+    }
+}
+
 /* Runs a loaded command on this process, as the ROM Shell's UserShell does:
  * stack, redirections, program name and dir, cli_Module, breaks cleared. */
 static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir, int *detached)
@@ -208,9 +245,11 @@ static LONG run_seg(BPTR seg, const char *name, struct cmdline *c, BPTR progdir,
     cli->cli_Module = seg;
     /* C, E and F as the ROM Shell does; a Ctrl-D stays for the script loop */
     SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+    run_cmdline_begin(name, c->args);
     SetIoErr(0);
     rc = RunCommand(seg, stack, c->args, c->arglen);
     r2 = IoErr();
+    run_cmdline_end();
     if (cli->cli_Module == 0) *detached = 1;   /* the command kept its code: never unload */
     cli->cli_Module = csh.module;
     Flush(Output());
@@ -469,16 +508,19 @@ LONG run_cmd(struct cmdline *c, int depth)
                 BPTR fh = Open(path, MODE_OLDFILE);
                 if (fh) { Read(fh, head, 6); Close(fh); }
             }
+            run_cmdline_begin(c->cmd, c->args);     /* the script's line, not its commands' */
             if (!memcmp(head, "#!csh", 5) && (head[5] == '\n' || head[5] == ' ' || head[5] == '\r' || !head[5]))
-                return lang_runscript(path, c);
-            if (head[0] == '/' && head[1] == '*') {
+                rc = lang_runscript(path, c);
+            else if (head[0] == '/' && head[1] == '*') {
                 strcpy(cmd, "RX ");
-                if (!quoted(cmd + 3, sizeof cmd - 3, path, c->args)) return 10;
-                run_line(cmd, depth + 1);
-                return csh.rc;
-            }
-            if (!quoted(cmd, sizeof cmd, path, c->args)) return 10;
-            rc = run_internal("Execute", cmd, c);
+                if (!quoted(cmd + 3, sizeof cmd - 3, path, c->args)) rc = 10;
+                else {
+                    run_line(cmd, depth + 1);
+                    rc = csh.rc;
+                }
+            } else if (!quoted(cmd, sizeof cmd, path, c->args)) rc = 10;
+            else rc = run_internal("Execute", cmd, c);
+            run_cmdline_end();
         } else {
             /* e cleared, or not a program: "file is not executable" as the ROM says */
             BPTR s = 0, dir;

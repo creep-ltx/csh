@@ -151,8 +151,10 @@ long os_run(struct cmdline *c)
     BPTR before = csh.cli->cli_CurrentInput;
     long rc;
     os_flush();
+    run_cmdline_begin(c->cmd, c->args);     /* _CMDLINE: this line, a script's lines included */
     rc = run_cmd(c, 0);
     if (csh.cli->cli_CurrentInput != before) rc = script_now(before);
+    run_cmdline_end();
     return rc;
 }
 
