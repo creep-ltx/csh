@@ -95,7 +95,7 @@ saved layout can start the program again with its arguments.
 - no git: `$(...)` in PROMPT is the way to show anything else.
 - `ls` calls every file with no ending and the e bit a program; Maki does not read
   ENVARC:FileColours yet (Ahiru does since 0.3b3, 2026-10-15).
-- Untested on the user's own scripts and daily use: ask what the user ran into.
+- The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
    (`docs/audit-2026-10-13.md`) and its fixes: csh 0.1b4 and ls 0.2, installed on the A1200
