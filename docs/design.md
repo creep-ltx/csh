@@ -29,7 +29,7 @@ note in its design.md or a message, never an edit there. Shared things:
 C:csh-0.1b8.bak, C:cshell-0.1b8.bak), C:useshell. To update cshell while it is the Shell:
 `Resident shell C:cshell REPLACE` then **`useshell`**: REPLACE swaps the system "shell" entry only
 while it is the ROM's; with cshell there it adds a plain resident "shell" that DOS never uses
-(0.1b8 was never really live: new Shells kept 0.1b7 until a reboot). useshell copies that entry's
+(so earlier updates reached new Shells only after a reboot - not checked which). useshell copies that entry's
 code into the system entry (tools/useshell.c; the old code stays in memory until a reboot). The
 boot (S:User-Startup, the ROM Shell still in the entry) needs only the REPLACE.
 
