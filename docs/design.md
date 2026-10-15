@@ -230,6 +230,240 @@ layout keeps a tab's drawer and `Maki S:Startup-Sequence` (via _CMDLINE) and an 
 program, Open layout brings them back (drawer and program), keys typed during `Wait 3` run after
 it, a bracketed paste lands on the line. Seen once: a quit asked while Maki ran in a tab (and a
 second CTerm open by mistake) left the idle tabs open until `exit` in each - a clean quit with
+idle tabs ends them at once (told the CTerm session). C:csh, C:cshell and their .baks deleted at the user's word (2026-10-15); kept:
+C:csh-0.1b10.bak, C:cshell-0.1b10.bak, C:useshell-0.1b10.bak (what S:User-Startup.bak-0.1b10
+needs, renamed back).odern shell for the Amiga
+
+*Design written 2026-10-12 with the user; steps 1-7 built 2026-10-13 (csh 0.1b1, ls 0.1, CTerm 0.3b32's shell setting). Everything here is proposed unless it
+says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
+AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
+read or memory is not yet proven on the 3.2 ROM.*
+
+## Start here (a later session)
+
+**Parallel sessions (set up 2026-10-15, the user's wish):** CTerm, csh and CUtils may each have a
+session running at the same time. Stay in your own repo: CTerm's session owns `~/Projects/CTerm`,
+csh's owns `~/Projects/CShell`, CUtils' owns `~/Projects/CUtils`; a change another one needs is a
+note in its design.md or a message, never an edit there. Shared things:
+- **FS-UAE on port 1240** (`~/Projects/CTerm/tests/files/uae.sh`) is used by all three: work in
+  your own RAM: drawer (CUtils: `S=x tests/run.sh`), never `uae.sh stop`/restart it without
+  asking the others (`ListAgents`, then a message); a crash there - tell the others before restarting.
+- **The A1200** (Wasabi): message the others before installing, rebooting or restarting wasabid;
+  quit test programs and say when the screen is free. Installing in C:/LIBS: needs the user's go.
+- **Ahiru and Maki's FileColours** is on both lists: the csh session does it (in those repos), not CUtils.
+- **Next for csh, in this order (the user's go, 2026-10-15: "calm and controlled"):**
+  (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
+  drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
+  (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) ~~the small bash
+  bits~~ done (0.1b9); (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
+  language as a part loaded on first use (last: it touches everything).
+  Install on the A1200 only when the user says so (as always, csh and cshell together).
+
+**0.1b9 INSTALLED on the A1200 2026-10-15 (the user asked): C:csh, C:cshell (0.1b8 kept as
+C:csh-0.1b8.bak, C:cshell-0.1b8.bak), C:useshell. To update cshell while it is the Shell:
+`Resident shell C:cshell REPLACE` then **`useshell`**: REPLACE swaps the system "shell" entry only
+while it is the ROM's; with cshell there it adds a plain resident "shell" that DOS never uses
+(so earlier updates reached new Shells only after a reboot - not checked which). useshell copies that entry's
+code into the system entry (tools/useshell.c; the old code stays in memory until a reboot). The
+boot (S:User-Startup, the ROM Shell still in the entry) needs only the REPLACE.
+
+**0.1b9: `_CMDLINE`** - while a program started from a line typed at
+the prompt runs, csh's process has the local variable `_CMDLINE` = that line (name and arguments,
+without redirections; a pipe's whole line; a script started at the prompt keeps its own line, not
+its commands'). Gone when it ends. Not set for lines of scripts or `csh FROM` (it cost 3-8% in
+tests/bench.sh there, and CTerm has no use for them): `csh.typed`, set in runtyped(). Set in
+os_run() (the language: Execute's lines run inside it, script_now) and run_seg() (the ROM rules),
+the outermost one wins; job.c's lastrun() for pipes. Test: `tests/cmdline.sh` (types into a CON:
+window: a test Amiga of your own). Told the CTerm session.
+**Also in 0.1b9, completion:** (a) a keyword's value - after a template word that takes one (`TO`
+of Copy's `TO/A`, any /K), Tab offers files, drawers and volumes but not the keywords; after a
+number (/N) it beeps; after `LFORMAT` it shows List's % codes; `TO=RAM:x` completes after the `=`.
+tplwords() keeps a letter before each word (S switch, K/N key with a value/number - offered; V/W
+named places - not offered). (b) the menu (bash's menu-complete): after a list, Tab puts its first
+name in, Tab again the next in its place, Shift+Tab (`completeback`, a new default key: defaults
+are read before csh.keys, so it arrives by itself) the one before, any other key keeps it.
+Test: `tests/comptest.sh` (types into a CON: window).
+**Also in 0.1b9, bash's small parts:** `declare -i/-l/-u` (and `+i/+l/+u`; attributes kept with
+-r in the RO list as AT_ bits, applied in sh_set/elem_set by attr_val; `x+=n` adds on an -i;
+`declare -p` prints the flags in bash's order); `printf %q` (a\ b, '', $'..' for control
+bytes); `${x@Q}` `${x@U}` `${x@L}` `${x@u}` `${x@E}`; `case` `;&` and `;;&`; `command` (no
+alias or function; `-v`/`-V` say what a name is, os_which -> run_which) and `exec` (cmd: csh
+leaves after it; redirections alone: kept until the language ends); `read -n N`, `-N N`,
+`-t SECS` (0.5 too; time out = 142), `-s` (os_readkeys: raw mode on a console, echoes itself,
+Backspace with -s), options together (-rs, -n1). PC tests 284; `tests/readtest.sh` types into a
+CON: window.
+**Also in 0.1b9, jobs:** `$!` = the last background job as `%n` (so `kill $!` and `wait $!` work;
+a number would be the Amiga's `wait 5`); `wait -n` (the first to end); `wait %n` quiet (was
+fg's); a job already collected (wait -n, "Done", jobs) still answers `wait %n` with its rc
+(the last 8, as bash keeps them); `disown [%n | -a]` (runs on, out of the list, reaped quietly;
+job_leave keeps csh's code for them too). Test: `tests/jobtest.sh`.
+
+**0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
+C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
+a name, a -flag) is passed to the kill command (CUtils' kill: by CLI number, 0x address or name),
+as `wait` does for Wait. Open Shells keep 0.1b7 until closed.
+
+**0.1b7 (2026-10-14, installed with C:cshell, 0.1b6 kept as .bak):** csh ends when its input
+ends while it waits at the prompt (raw read of 0: a CTerm tab or pane closed) - before, the tab
+stayed open with csh in it. Goes with CTerm 0.3b35.
+
+**State at the end of 2026-10-14: csh 0.1b6 INSTALLED on the A1200** (the user asked): C:csh and
+C:cshell 0.1b6 (C:csh-0.1b5.bak kept); **cshell is the Shell at every boot**: the first block of S:User-Startup
+(`;BEGIN CShell` ... `If EXISTS C:cshell` / `Resident shell C:cshell REPLACE`; the old file kept as
+S:User-Startup.bak; checked after a reboot: a NewShell runs csh's language), C:ls 0.2, CTerm 0.3b34 with `shell=csh`. 0.1b6 has bash's missing parts (below);
+all tests green (PC 61 + 255 checks, 5 language scripts and 12 ROM pairs on the A1200, cshell's
+shelltest on the A1200, no memory lost over 10 runs of tests/lang/bash.csh). CTerm **0.3b34**
+(bracketed paste fixed) INSTALLED 2026-10-14 (the user asked; CTerm-0.3b33.bak kept).
+**Install the two together**: cshell's `&` of csh's own commands needs C:csh of its own version.
+
+**The user's rule for csh (2026-10-13): the best of bash, zsh and fish; when in doubt ask how
+they handle it; fast (never slower than the ROM Shell, tests/bench.sh); in the end a full shell
+replacement.**
+
+**Done 2026-10-14 (the user: "missing bash features should go in"; * expanded, csh's own commands
+with &, prompt extras - "fix"):**
+- arrays (indexed, `declare -A`), `declare/typeset/local/readonly` (words not split: `local
+  y=$x`), `${x:o:l}` `${x/a/b}` `${x//a/b}` `${x^^}` `${x,,}` `${!x}` `${!a[@]}` `${a[@]:1:2}`,
+  `$'..'`, `$RANDOM` `$SECONDS` `$-`, `set -u -f -o pipefail/-o name/-H`, `PIPESTATUS`.
+- arithmetic: `++ -- += -= *= ... ?: ** & | ^ << >> ,` (bash's order; the untaken side makes no
+  assignments), `16#ff 2#101 010`, `(( ))`, `let`, `for ((;;))`, `for ... { }`.
+- `[[ ]]` (no splitting, `==` patterns, `=~` regex in `src/regex.c` - a Pike VM, POSIX ERE
+  plus `\w \s`, `BASH_REMATCH`), `-v -nt -ot`.
+- `trap` EXIT/INT/ERR/RETURN (HUP, TERM... taken, never come), `getopts`, `select`, `mapfile`,
+  `read -a`, `printf -v` and `%f %e %g` (worked on the decimal text, half to even on a tie: no
+  float code linked), `cd -`, `cd ..` (is `/`), `cd` alone (HOME, else SYS:), `pushd popd dirs`,
+  `unset -f`, `|&`, `<(cmd)` (a T: file).
+- `( )` and `$( )` are subshells in effect: the local variables and aliases, current dir,
+  functions, arrays, `$1..`, options are put back after (`snap_take/snap_give`, `os_snap`).
+- `*` `?` `[..]` match files in csh (bash): `echo *.txt` lists them; an Amiga command gets the
+  files - except one whose template takes one name (no `/M`: Dir, CD), which gets the pattern as
+  `#?` as on the Amiga; a line too long falls back to the pattern; no match: the pattern goes on
+  (`#?.none`, the program says "no match"). `?` alone stays ReadArgs' help. `set -f` stops it.
+- csh's own commands with `&`, and a loop/function/block in a pipe's middle: a csh of its own
+  (the same file, `csh.self`) runs a T: script with the functions, arrays, `$1..` and options;
+  the local variables and aliases come with NP_Cli (verified). Streams; `f | phead 3` with an
+  endless `f` ends (the last stage done, Ctrl-C after a second). A quick built-in in the middle
+  (echo, printf) still writes a T: file.
+- at the prompt: `!! !$ !^ !* !n !-n !str ^a^b` (`src/bang.c`, shown before it runs, as bash);
+  `PROMPT`/`PS1` with zsh's escapes (`%~ %c %V %T %* %D %j %M %E %h %F{red} %K{..} %B %U
+  %(?.a.b) %(j.a.b)`, `$var` and `$(cmd)` expanded first), `RPROMPT` (right edge, gone when the
+  line reaches it), `PS2`, `$CMD_DURATION` (ms, fish). Ctrl-D stops csh's own loops even when an
+  INT trap takes Ctrl-C; Ctrl+L in CTerm clears with codes CTerm does not take for a whole-screen
+  program (its FF/CSI H/CSI 2J from a raw reader moved csh to CTerm's other screen).
+- a pipe's commands are found and loaded once, before any starts (they were looked up twice):
+  pipes in the csh language 0.99 of the ROM's.
+
+**Used by others:** CTerm's saved layouts read the tab Shell's cli_SetName (current drawer) and
+cli_CommandName (csh sets it while a program runs, run.c) - keep both right. CTerm 0.3b35+ ends a
+closed tab's input for good; csh 0.1b7 ends on a raw read of 0 (keep that, or tabs stay open).
+Idea from CTerm: keep the running command's whole line in a local variable (`_CMDLINE`) so a
+saved layout can start the program again with its arguments.
+
+**What csh still lacks** (the list to work from):
+- size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
+  modular, load on demand); never measured slower to start (84 ms either way on the A1200).
+- jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C (see "Ctrl-Z" below).
+- completion: the menu does not mark the name in the list; `**/` (globstar), extglob.
+- `read -d`, `declare -n` (namerefs), `${x@A}`, `${x@P}`; `exec` cannot replace csh (no exec on
+  the Amiga): it runs the command and leaves.
+- no git: `$(...)` in PROMPT is the way to show anything else.
+- The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.
+
+1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
+   (`docs/audit-2026-10-13.md`) and its fixes: csh 0.1b4 and ls 0.2, installed on the A1200
+   2026-10-13 (the user asked; C:csh-0.1b3.bak and C:ls-0.1.bak kept), tried in CTerm there (prompt,
+   pipes, colours). Not yet tried: a marked paste in CTerm.** Four nameless tasks (2048 stack,
+   pri 2) on the A1200 look like break relays left by an older csh, waiting in freed memory: ask the
+   user before removing them. **0.1b5 (2026-10-14)**: cshell, the user shell (see "csh as the user
+   shell"); csh itself: run.c's FileInfoBlock freed at the end (260 bytes a run, measured), a pipe
+   whose command after the first is missing starts nothing (a writer would wait for ever on 3.2's
+   PIPE:), and once a pipe's last stage is done the others get a Ctrl-C after a second. 0.1b5 installed
+   on the A1200 2026-10-14 (C:csh-0.1b4.bak kept; the user asked), the four leftover relay tasks
+   removed there with `wasabi kill --force` (the user agreed). cshell and the ROM: FS-UAE only.
+2. **Step 0 is done** (2026-10-13): the answers are in the knowledge note's section D, the probes in
+   `tests/probe`.
+3. **Done** (all 2026-10-13, tried in FS-UAE and on the A1200):
+   - **Step 1, csh runs commands** (`src/run.c`, `src/line.c`): the ROM's line rules, search order
+     and RunCommand on csh's own process; the ROM's internal commands for CD, Set, If, Skip,
+     Execute, Prompt...; FailAt, `Set echo on`, Ctrl-D, EndCLI. Amiga scripts (Execute, s-bit,
+     `csh FROM file` without `#!csh`) run by these rules, and come out byte for byte as in the
+     ROM Shell (step 2 mostly came free with the ROM's own internal commands).
+   - **Step 3, the prompt** (`term.c`, `edit.c`, `comp.c`, `hist.c`, `keys.c`, `prefs.c`): csh edits
+     its line itself in raw mode; colours as typed, the grey suggestion, Up/Down by prefix, Ctrl+R,
+     Tab (commands, files, assigns, `$vars`), `ENVARC:CShell/csh.keys` and `csh.prefs`, history in
+     `ENV:CShell/history` (shared between tabs, saved to ENVARC every 20 lines and at the end).
+   - **Step 4, the csh language** (`lang.c`, `builtin.c`, `os.c`): at the prompt and in `#!csh`
+     scripts. The words go back to Amiga commands as an Amiga line (`amigaarg()`).
+   - **Step 5, pipes and jobs** (`job.c`): each Amiga command of a pipe in a process of its own
+     (NP_Cli) joined by PIPE:, csh finding and loading it (run_prepare); the last stage in csh
+     itself, with the console's breaks pointed at a relay task so Ctrl-C reaches every stage; a
+     csh stage (built-in, loop) last reads the pipe in csh, in the middle writes a T: file.
+     Amiga-script pipes run the same way, ROM-exact (every stage looked for first). `&`, `jobs`,
+     `fg`, `kill`, `wait` (`wait 5` is the Amiga's Wait); "[n] Done" at the next prompt; exit
+     with jobs running warns once, then leaves csh's code in memory for them.
+   - **Step 6, `ls` and the family colour file** (`tools/ls.c`, retired 2026-10-15 for CUtils' ls, 14 KB): CUtils'
+     ls in C (`-1aAdFhlrRSt`, columns from `$COLUMNS` which csh keeps, else the console asked;
+     natural order; ExAll), coloured by kind from **`ENVARC:FileColours`** (`KIND CTERM,PLAIN`
+     SGR numbers as in csh.prefs, `.EXT KIND`), written with the defaults when missing.
+4. **Testing:** `make test` (PC, ASan: 57 line-rule and 105 language checks, `tests/fakeos.c`
+   stands in for the Amiga); `tests/pairs.sh` (ROM Shell vs csh, 12 scripts), `tests/langtest.sh`
+   (`tests/lang/*.csh` vs `.want` on the real ROM: basic, pipes, ls), `tests/bench.sh` (speed
+   against the ROM Shell). All run against `CTerm/tests/files/uae.sh`'s FS-UAE (`tests/probe/w`);
+   with `W=probe/a` on the A1200 (shared: check `wasabi ps` first, clean RAM: after).
+5. **Speed (the user's rule: never slower than the ROM Shell)**, A1200, best of 3, csh/ROM:
+   Amiga scripts 0.80-0.98; the same jobs in the csh language 0.14-0.99 (pipes 0.98 / 0.99, a
+   loop with `[ ]` and `$(( ))` 0.14). `ls SYS:C` in a window 0.70 s against C:Dir 1.80 s
+   (FS-UAE). Keep `tests/bench.sh` green after every change.
+6. **Step 7 is done in CTerm 0.3b32**: `shell=` in CTerm.prefs (Settings, Files: "Then runs"),
+   or `CTerm SHELL csh` for one run; the tab's Execute() string gets the shell as its next line,
+   so the ROM Shell stays under csh.
+   **Installed on the A1200 2026-10-13 (the user agreed):** C:csh 0.1b3, C:ls 0.1 (the user's
+   CUtils ls kept as C:ls-cutils.bak), CTerm 0.3b32 with its parts in Work:Utils/CTerm (0.3b31
+   kept as CTerm-0.3b31.bak and Parts-0.3b31.bak), and `shell=csh` in ENVARC:/ENV:CTerm.prefs:
+   every new CTerm tab starts csh.
+   **0.1b3 + CTerm 0.3b33:** keys typed while a command runs stay keys (CTerm's `CSI ?7727 h`,
+   set by csh in term_open, reset on exit), csh reads one key at a time (what follows the
+   Return stays for the command or the next prompt). `csh FROM`/`COMMAND` end the break relay
+   (a relay left behind waited in freed memory; four were found on the A1200 and removed with
+   `wasabi kill --force`).
+   **Added 2026-10-13 evening:** `~` (HOME, else SYS:), `{a,b}` and `{1..5}`, `local` in
+   functions, `S:CShell-Startup` (run once at the first prompt, the csh language), Tab
+   completes a command's own keywords (read from its file: the longest run of ReadArgs parts,
+   a few stray bytes before it allowed; the ROM's internal commands from a table).
+   **Next:** Maki reading `ENVARC:FileColours` (Ahiru does, 0.3b3);
+   loading parts on demand (csh is 80 KB; the language could be a part); what the user finds.
+7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
+
+## Ctrl-Z (2026-10-15: looked at, not done; the user to decide)
+
+A program started from csh runs on csh's own process (RunCommand, as the ROM Shell does): while it
+runs, csh is not running at all, so there is nobody to see a Ctrl-Z. Exec has no way to stop a task:
+taking it off the ready list (Disable, Remove) freezes it, and a program frozen while it holds a
+semaphore (layers, a filesystem) hangs everything that waits on that. Possible later, safely: run a
+foreground command in a process of its own (as a pipe stage) and let Ctrl-Z put it in the background
+(not stopped - "bg" at once), costing a process per command; or only for pipes, whose stages already
+run apart.
+
+## Memory per window (measured 2026-10-15, FS-UAE a1200-32-mui5, Avail TOTAL around NewShell)
+
+| What runs in the window | Bytes |
+|---|---|
+| the ROM Shell | ~40 000 (the CON: window, console, Shell) |
+| the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
+| cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
+
+## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
+
+**INSTALLED on the A1200 2026-10-15 (the user said go; rebooted):** L:csh 0.1b11 (p, not e),
+C:useshell (old: C:useshell-0.1b10.bak), S:User-Startup's CShell block = `useshell L:csh`
+(old block: S:User-Startup.bak-0.1b10), `shell=csh` taken out of ENV:/ENVARC:CTerm.prefs
+(ENVARC:CTerm.prefs.bak-shellcsh). After the reboot: both entries in RAM (csh), Execute()/System()
+both ways run it, Quit 7 -> 7; Wasabi's checks (wait up, ping, Search rc 5, Echo, --detach at
+once, --max-time 3 -> 124, rexx say/exit 3) all right; CTerm 0.3b47: tabs are csh, a saved
+layout keeps a tab's drawer and `Maki S:Startup-Sequence` (via _CMDLINE) and an idle tab as no
+program, Open layout brings them back (drawer and program), keys typed during `Wait 3` run after
+it, a bracketed paste lands on the line. Seen once: a quit asked while Maki ran in a tab (and a
+second CTerm open by mistake) left the idle tabs open until `exit` in each - a clean quit with
 idle tabs ends them at once (told the CTerm session). C:csh, C:cshell and their .baks are still
 C:useshell-0.1b10.bak (the setup S:User-Startup.bak-0.1b10 restores, renamed back).
 
