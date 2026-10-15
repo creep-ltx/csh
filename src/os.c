@@ -158,6 +158,60 @@ long os_run(struct cmdline *c)
     return rc;
 }
 
+int os_which(const char *name, char *buf, int size) { return run_which(name, buf, size); }
+
+/* read -n/-N/-t/-s: up to n characters (n 0: a line), the Return ending
+ * it unless exact; ticks: fiftieths to wait at most (-1 for ever); silent:
+ * nothing echoed. A console is put in raw mode for -n and -s (the keys one
+ * by one; csh echoes them itself unless -s). Length, -1 at the end, -2
+ * when the time ran out. */
+int os_readkeys(char *buf, int size, int n, int exact, long ticks, int silent)
+{
+    BPTR in = Input();
+    int got = 0, raw, inter;
+    long t0 = ticks >= 0 ? os_ticks() : 0;
+    os_flush();
+    inter = IsInteractive(in);
+    raw = inter && (n > 0 || silent);
+    if (raw) SetMode(in, 1);
+    for (;;) {
+        char c;
+        LONG k;
+        if (n > 0 && got >= n) break;
+        if (got >= size - 1) break;
+        if (ticks >= 0 && inter && (raw || !got)) {
+            long left = ticks - (os_ticks() - t0);
+            if (left < 0) left = 0;
+            if (!WaitForChar(in, left * 20000)) { got = -2; break; }
+        }
+        if (!raw && inter && !n) {          /* a whole line, the console's own editing */
+            if (!FGets(in, buf + got, size - got)) { if (!got) got = -1; break; }
+            got += strlen(buf + got);
+            break;
+        }
+        if ((k = Read(in, &c, 1)) <= 0) { if (!got) got = -1; break; }
+        if (raw && c == '\r') c = '\n';
+        if (raw && !n && (c == 8 || c == 127)) {     /* -s alone: backspace takes one back */
+            if (got) got--;
+            continue;
+        }
+        if (raw && c == 3) { SetSignal(SIGBREAKF_CTRL_C, SIGBREAKF_CTRL_C); got = -1; break; }   /* Ctrl-C */
+        if (c == '\n' && !exact) {
+            if (raw && !silent) os_tty("\n", 1);
+            if (!n) buf[got++] = c;
+            break;
+        }
+        buf[got++] = c;
+        if (raw && !silent) os_tty(&c, 1);
+    }
+    if (raw) {
+        SetMode(in, 0);
+        if (silent && got != -1) os_tty("\n", 1);     /* bash leaves the line; the next output starts below */
+    }
+    if (got >= 0) buf[got] = 0;
+    return got;
+}
+
 int os_readline(char *buf, int size)
 {
     os_flush();

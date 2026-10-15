@@ -42,6 +42,7 @@ static int ltoa_(long n, char *b)
 
 typedef struct Block { struct Block *next; long used, size; } Block;
 typedef struct { Block *head; } Arena;
+static char *dollarq(Arena *ar, const char *s, int n);   /* ${x@E} */
 
 static void *aalloc(Arena *a, long n)
 {
@@ -91,7 +92,8 @@ static void sputc(Str *b, char c) { sput(b, &c, 1); }
 
 /* ---- tokens --------------------------------------------------------------- */
 
-enum { T_EOF, T_WORD, T_NL, T_SEMI, T_DSEMI, T_AMP, T_AND, T_OR, T_PIPE, T_LP, T_RP, T_REDIR };
+enum { T_EOF, T_WORD, T_NL, T_SEMI, T_DSEMI, T_AMP, T_AND, T_OR, T_PIPE, T_LP, T_RP, T_REDIR,
+       T_SEMIAMP, T_DSEMIAMP };      /* case's ;& and ;;& */
 enum { R_IN, R_OUT, R_APP, R_ERR, R_ERRAPP, R_BOTH, R_BOTHAPP, R_ERROUT, R_OUTERR, R_INOUT, R_HERE, R_HERESTR };
 
 typedef struct Redir {
@@ -257,6 +259,8 @@ again:
             goto again;
         }
         if (c == '\n') { L->pos++; t->type = T_NL; if (L->nhd) heredocs(L); return t->type; }
+        if (c == ';' && d == '&') { L->pos += 2; return t->type = T_SEMIAMP; }
+        if (c == ';' && d == ';' && e == '&') { L->pos += 3; return t->type = T_DSEMIAMP; }
         if (c == ';') { L->pos += d == ';' ? 2 : 1; return t->type = d == ';' ? T_DSEMI : T_SEMI; }
         if (c == '&' && d == '&') { L->pos += 2; return t->type = T_AND; }
         if (c == '&' && d == '>') { L->pos += e == '>' ? 3 : 2; t->op = e == '>' ? R_BOTHAPP : R_BOTH; return t->type = T_REDIR; }
@@ -381,7 +385,7 @@ static int isstop(Tok *t)
 {
     static const char *const stops[] = { "then", "else", "elif", "fi", "do", "done", "esac", "}", NULL };
     int i;
-    if (t->type == T_EOF || t->type == T_RP || t->type == T_DSEMI) return 1;
+    if (t->type == T_EOF || t->type == T_RP || t->type == T_DSEMI || t->type == T_SEMIAMP || t->type == T_DSEMIAMP) return 1;
     for (i = 0; stops[i]; i++) if (isword(t, stops[i])) return 1;
     return 0;
 }
@@ -391,7 +395,8 @@ static int isstop(Tok *t)
 enum { N_SIMPLE, N_LIST, N_AND, N_OR, N_NOT, N_PIPE, N_BG, N_IF, N_WHILE, N_UNTIL, N_FOR,
        N_CASE, N_GROUP, N_SUB, N_FUNC, N_ARITH, N_CFOR, N_COND, N_SELECT };
 
-typedef struct Case { char **pats; int npats; struct Node *body; struct Case *next; } Case;
+/* end: 0 ;; (stop), 1 ;& (the next body runs too), 2 ;;& (the next patterns are tried) */
+typedef struct Case { char **pats; int npats; struct Node *body; struct Case *next; int end; } Case;
 
 typedef struct Node {
     int type;
@@ -425,7 +430,7 @@ static void fail(Lex *L, Tok *t)
         int n = t->type == T_WORD ? (t->len < 30 ? t->len : 30) : 0;
         if (n) memcpy(what, t->text, n);
         else {
-            static const char *const names[] = { "end", "word", "newline", ";", ";;", "&", "&&", "||", "|", "(", ")", "redirection" };
+            static const char *const names[] = { "end", "word", "newline", ";", ";;", "&", "&&", "||", "|", "(", ")", "redirection", ";&", ";;&" };
             strcpy(what, names[t->type]); n = strlen(what);
         }
         what[n] = 0;
@@ -737,7 +742,10 @@ static Node *parse_command(Lex *L)
             c->body = parse_list(L);
             if (L->error || L->incomplete) return NULL;
             *cp = c; cp = &c->next;
-            if (peek(L)->type == T_DSEMI) { next(L); skipnl(L); continue; }
+            if (peek(L)->type == T_DSEMI || peek(L)->type == T_SEMIAMP || peek(L)->type == T_DSEMIAMP) {
+                c->end = peek(L)->type == T_SEMIAMP ? 1 : peek(L)->type == T_DSEMIAMP ? 2 : 0;
+                next(L); skipnl(L); continue;
+            }
             if (!isword(peek(L), "esac")) { fail(L, peek(L)); return NULL; }
         }
         next(L);
@@ -1057,7 +1065,13 @@ int gmatch(const char *p, const char *s, int nocase)
 typedef struct AEnt { struct AEnt *next; long idx; char *key, *val; } AEnt;
 typedef struct Arr { struct Arr *next; int assoc, n; AEnt *head; char *name; } Arr;
 static Arr *arrs;
-typedef struct RO { struct RO *next; char name[1]; } RO;
+/* a name's attributes (declare -r -i -l -u): read-only, an integer (what
+ * is put in is worked out as $(( )) does), lower or upper case */
+#define AT_RO  1
+#define AT_INT 2
+#define AT_LOW 4
+#define AT_UP  8
+typedef struct RO { struct RO *next; int at; char name[1]; } RO;
 static RO *ros;
 
 static int veq(const char *a, const char *b)       /* names: any case, as the Amiga's */
@@ -1218,20 +1232,54 @@ static void arr_del(Arr *a, const char *key)
     a->n--;
 }
 
-static int ro_has(const char *name)
+static int attr_of(const char *name)
 {
     RO *r;
-    for (r = ros; r; r = r->next) if (veq(r->name, name)) return 1;
+    for (r = ros; r; r = r->next) if (veq(r->name, name)) return r->at;
     return 0;
 }
 
-void sh_readonly(const char *name)
+static int ro_has(const char *name) { return attr_of(name) & AT_RO; }
+
+/* on: attributes given, off: taken away (-l takes -u away and the other way) */
+static void attr_set(const char *name, int on, int off)
 {
     RO *r;
-    if (ro_has(name) || !(r = os_alloc(sizeof *r + strlen(name)))) return;
-    strcpy(r->name, name);
-    r->next = ros;
-    ros = r;
+    for (r = ros; r; r = r->next) if (veq(r->name, name)) break;
+    if (!r) {
+        if (!on || !(r = os_alloc(sizeof *r + strlen(name)))) return;
+        strcpy(r->name, name);
+        r->next = ros;
+        ros = r;
+    }
+    r->at = (r->at & ~off) | on;
+}
+
+void sh_readonly(const char *name) { attr_set(name, AT_RO, 0); }
+
+long arith(const char *expr, int *err);
+
+/* A value as the name's attributes want it: an integer worked out, the case
+ * changed; in buf (or val itself). NULL: not a number (said). */
+static const char *attr_val(const char *name, const char *val, char *buf, int size)
+{
+    int at = ros ? attr_of(name) : 0, i;
+    if (!(at & (AT_INT | AT_LOW | AT_UP))) return val;
+    if (at & AT_INT) {
+        int err = 0;
+        long v = *val ? arith(val, &err) : 0;
+        if (err) { if (err != 3) sh_error("not a number:", val); return NULL; }
+        ltoa_(v, buf);
+        return buf;
+    }
+    for (i = 0; val[i] && i < size - 1; i++) {
+        int c = (unsigned char)val[i];
+        if (at & AT_LOW) { if ((c >= 'A' && c <= 'Z') || (c >= 0xc0 && c <= 0xde && c != 0xd7)) c += 32; }
+        else if ((c >= 'a' && c <= 'z') || (c >= 0xe0 && c <= 0xfe && c != 0xf7)) c -= 32;
+        buf[i] = c;
+    }
+    buf[i] = 0;
+    return buf;
 }
 
 static int ro_refuse(const char *name)
@@ -1275,7 +1323,9 @@ int sh_get(const char *name, char *buf, int size)
 int sh_set(const char *name, const char *val, int how)
 {
     Arr *a;
+    char ab[LINE_MAX];
     if (ro_refuse(name)) return 0;
+    if (!(val = attr_val(name, val, ab, sizeof ab))) return 0;
     if (arrs && (a = arr_find(name)) && how != V_EXPORT) { arr_put(a, a->assoc ? "0" : "0", val); return 1; }
     os_setvar(name, val, how);
     return 1;
@@ -1301,7 +1351,9 @@ static int elem_get(const char *name, const char *key, char *buf, int size)
 static int elem_set(const char *name, const char *key, const char *val)
 {
     Arr *a = arr_find(name);
+    char ab[LINE_MAX];
     if (ro_refuse(name)) return 0;
+    if (!(val = attr_val(name, val, ab, sizeof ab))) return 0;
     if (!a) {                    /* a[1]=x makes a an array; a plain value becomes a[0] */
         char old[LINE_MAX];
         int l = os_getvar(name, old, sizeof old);
@@ -2089,6 +2141,28 @@ static void brace(Exp *e, const char *s, int n, int inquotes)
             for (k = 0; k < v.n; k++) v.v[k] = replace(e, v.v[k], p, r, how);
             goto out;
         }
+        if (op == '@' && i + 2 == n && strchr("QULuE", s[i + 1])) {   /* ${x@Q} ${x@U} ${x@L} ${x@u} ${x@E} */
+            char how = s[i + 1];
+            for (k = 0; k < v.n; k++) {
+                char *x = v.v[k], *o;
+                int j, m = 0;
+                if (how == 'Q') {          /* 'a b', a ' as '\'' */
+                    for (j = 0; x[j]; j++) m += x[j] == '\'' ? 4 : 1;
+                    if (!(o = aalloc(e->ar, m + 3))) continue;
+                    m = 0; o[m++] = '\'';
+                    for (j = 0; x[j]; j++) {
+                        if (x[j] == '\'') { memcpy(o + m, "'\\''", 4); m += 4; }
+                        else o[m++] = x[j];
+                    }
+                    o[m++] = '\''; o[m] = 0;
+                    v.v[k] = o;
+                } else if (how == 'E') {   /* the escapes of $'...' */
+                    v.v[k] = dollarq(e->ar, x, strlen(x));
+                } else
+                    for (j = 0; x[j]; j++) x[j] = how == 'L' ? lc(x[j]) : how == 'U' || j == 0 ? uc(x[j]) : x[j];
+            }
+            goto out;
+        }
         if (op == '^' || op == ',') {          /* ${x^} ${x^^} ${x,} ${x,,} */
             int all = i + 1 < n && s[i + 1] == op;
             for (k = 0; k < v.n; k++) {
@@ -2129,36 +2203,56 @@ bad:
     aborted = 1;
 }
 
-/* $'...': bash's C escapes (\n \t \e \x41 \101 \' \\) */
+/* ${x@E}: a value with its $'...' escapes worked out, in the arena */
+static int ansic1(const char *s, int i, int n, char *c);
+static char *dollarq(Arena *ar, const char *s, int n)
+{
+    char *o = aalloc(ar, n + 1);
+    int i = 0, m = 0;
+    if (!o) return (char *)s;
+    while (i < n) i = ansic1(s, i, n, &o[m++]);
+    o[m] = 0;
+    return o;
+}
+
+/* One character of $'...' at s[i] (a \ escape, or itself): in *c; the
+ * index after it. bash's C escapes (\n \t \e \x41 \101 \' \\). */
+static int ansic1(const char *s, int i, int n, char *c)
+{
+    *c = s[i];
+    if (s[i] == '\\' && i + 1 < n) {
+        char d = s[++i];
+        int k, v = 0;
+        switch (d) {
+        case 'n': *c = '\n'; break; case 't': *c = '\t'; break; case 'r': *c = '\r'; break;
+        case 'a': *c = 7; break; case 'b': *c = 8; break; case 'f': *c = 12; break; case 'v': *c = 11; break;
+        case 'e': case 'E': *c = 27; break;
+        case 'x':
+            for (k = 0; k < 2 && i + 1 < n && ((s[i + 1] >= '0' && s[i + 1] <= '9') || ((s[i + 1] | 32) >= 'a' && (s[i + 1] | 32) <= 'f')); k++) {
+                char h = s[++i];
+                v = v * 16 + (h <= '9' ? h - '0' : (h | 32) - 'a' + 10);
+            }
+            *c = k ? v : 'x';
+            break;
+        default:
+            if (d >= '0' && d <= '7') {
+                v = d - '0';
+                for (k = 0; k < 2 && i + 1 < n && s[i + 1] >= '0' && s[i + 1] <= '7'; k++) v = v * 8 + s[++i] - '0';
+                *c = v;
+            } else *c = d;               /* \' \" \\ \? */
+        }
+    }
+    return i + 1;
+}
+
+/* $'...' */
 static int ansic(Exp *e, const char *s, int n)
 {
     int i = 2;
     while (i < n && s[i] != '\'') {
-        char c = s[i];
-        if (c == '\\' && i + 1 < n) {
-            char d = s[++i];
-            int k, v = 0;
-            switch (d) {
-            case 'n': c = '\n'; break; case 't': c = '\t'; break; case 'r': c = '\r'; break;
-            case 'a': c = 7; break; case 'b': c = 8; break; case 'f': c = 12; break; case 'v': c = 11; break;
-            case 'e': case 'E': c = 27; break;
-            case 'x':
-                for (k = 0; k < 2 && i + 1 < n && ((s[i + 1] >= '0' && s[i + 1] <= '9') || ((s[i + 1] | 32) >= 'a' && (s[i + 1] | 32) <= 'f')); k++) {
-                    char h = s[++i];
-                    v = v * 16 + (h <= '9' ? h - '0' : (h | 32) - 'a' + 10);
-                }
-                c = k ? v : 'x';
-                break;
-            default:
-                if (d >= '0' && d <= '7') {
-                    v = d - '0';
-                    for (k = 0; k < 2 && i + 1 < n && s[i + 1] >= '0' && s[i + 1] <= '7'; k++) v = v * 8 + s[++i] - '0';
-                    c = v;
-                } else c = d;               /* \' \" \\ \? */
-            }
-        }
+        char c;
+        i = ansic1(s, i, n, &c);
         qput(e, c);
-        i++;
     }
     e->have = 1; e->quoted = 1;
     return i + 1;
@@ -2957,7 +3051,14 @@ static int assign(Arena *ar, const char *w, int how)
         }
         return elem_set(name, key, v);
     }
-    if (plus) {
+    if (plus && ros && (attr_of(name) & AT_INT)) {     /* declare -i: += adds */
+        char old[LINE_MAX], *j;
+        int l = sh_get(name, old, sizeof old);
+        if (l > 0 && (j = aalloc(ar, l + strlen(v) + 6))) {
+            strcpy(j, old); strcat(j, "+("); strcat(j, *v ? v : "0"); strcat(j, ")");
+            v = j;
+        }
+    } else if (plus) {
         char old[LINE_MAX];
         int l = sh_get(name, old, sizeof old);
         if (l > 0) {
@@ -2978,11 +3079,22 @@ static void decl_quote(const char *v)       /* "..." with \ " $ ` escaped */
 static void decl_print(const char *name)
 {
     Arr *a = arr_find(name);
-    char v[LINE_MAX];
-    int ro = ro_has(name);
+    char v[LINE_MAX], fl[12];
+    int at = attr_of(name), k = 0;
+    /* the flags in bash's order: declare -ar, -ir, -- for none */
+    if (a) fl[k++] = a->assoc ? 'A' : 'a';
+    if (at & AT_INT) fl[k++] = 'i';
+    if (at & AT_LOW) fl[k++] = 'l';
+    if (at & AT_RO) fl[k++] = 'r';
+    if (at & AT_UP) fl[k++] = 'u';
+    if (!k) fl[k++] = '-';
+    fl[k] = 0;
+    if (!a && os_getvar(name, v, sizeof v) < 0) { sh_error("declare: not found:", name); return; }
+    sh_print("declare -");
+    sh_print(fl);
+    sh_print(" ");
     if (a) {
         AEnt *x;
-        sh_print(a->assoc ? (ro ? "declare -rA " : "declare -A ") : (ro ? "declare -ra " : "declare -a "));
         sh_print(a->name);
         sh_print("=(");
         for (x = a->head; x; x = x->next) {
@@ -2996,8 +3108,6 @@ static void decl_print(const char *name)
         sh_print(")\n");
         return;
     }
-    if (os_getvar(name, v, sizeof v) < 0) { sh_error("declare: not found:", name); return; }
-    sh_print(ro ? "declare -r " : "declare -- ");
     sh_print(name);
     sh_print("=");
     decl_quote(v);
@@ -3017,7 +3127,7 @@ static void func_print(Func *f)
 static long __attribute__((noinline)) decl(Node *n, int kind)
 {
     Arena ar = { NULL };
-    int i, fa = 0, fA = 0, fr = kind == 2, fx = 0, fp = 0, ff = 0, fF = 0, fg = 0, any = 0, loc;
+    int i, fa = 0, fA = 0, fr = kind == 2, fx = 0, fp = 0, ff = 0, fF = 0, fg = 0, any = 0, loc, aton = 0, atoff = 0;
     long r = 0;
     if (kind == 1 && !frame) { sh_error("local:", "only in a function"); return 10; }
     for (i = 1; i < n->nwords && !aborted; i++) {
@@ -3026,7 +3136,11 @@ static long __attribute__((noinline)) decl(Node *n, int kind)
         loc = (kind == 1 || (kind == 0 && frame && !fg)) && !fp && !ff && !fF;
         if (!eq && (raw[0] == '-' || raw[0] == '+') && raw[1]) {
             const char *o;
+            int plus = raw[0] == '+';
             for (o = raw + 1; *o; o++) switch (*o) {
+            case 'i': if (plus) atoff |= AT_INT; else aton |= AT_INT; break;
+            case 'l': if (plus) atoff |= AT_LOW; else { aton = (aton | AT_LOW) & ~AT_UP; atoff |= AT_UP; } break;
+            case 'u': if (plus) atoff |= AT_UP; else { aton = (aton | AT_UP) & ~AT_LOW; atoff |= AT_LOW; } break;
             case 'a': fa = 1; break;
             case 'A': fA = 1; break;
             case 'r': fr = 1; break;
@@ -3035,7 +3149,7 @@ static long __attribute__((noinline)) decl(Node *n, int kind)
             case 'f': ff = 1; break;
             case 'F': fF = 1; break;
             case 'g': fg = 1; break;
-            case 'i': case 'l': case 'u': case 't': case 'n': break;     /* taken, not kept */
+            case 't': case 'n': break;     /* taken, not kept */
             default: { char b[3] = { '-', *o, 0 }; sh_error("declare: unknown option", b); afree(&ar); return 10; }
             }
             continue;
@@ -3048,6 +3162,7 @@ static long __attribute__((noinline)) decl(Node *n, int kind)
             memcpy(name, raw, nl); name[nl] = 0;
             if (ro_refuse(name)) { r = 1; continue; }
             if (loc) sh_local(name, NULL);
+            if (aton | atoff) attr_set(name, aton, atoff);      /* before the value: declare -i x=2+3 is 5 */
             if (fA && !arr_find(name)) arr_make(name, 1);
             else if (fa && !arr_find(name)) arr_make(name, 0);
             if (!assign(&ar, raw, fx ? V_EXPORT : loc ? V_LOCAL : V_ASSIGN)) r = 1;
@@ -3067,6 +3182,11 @@ static long __attribute__((noinline)) decl(Node *n, int kind)
                     continue;
                 }
                 if (loc) sh_local(name, NULL);
+                if (aton | atoff) {     /* the value there now: made to fit */
+                    int l = os_getvar(name, v, sizeof v);
+                    attr_set(name, aton, atoff);
+                    if (l >= 0 && !arr_find(name) && !sh_set(name, v, loc ? V_LOCAL : V_ASSIGN)) r = 1;
+                }
                 if (fA && !arr_find(name)) arr_make(name, 1);
                 else if (fa && !arr_find(name)) arr_make(name, 0);
                 if (fx) { int l = os_getvar(name, v, sizeof v); if (l >= 0) os_setvar(name, v, V_EXPORT); }
@@ -3087,6 +3207,50 @@ static long __attribute__((noinline)) decl(Node *n, int kind)
     return r;
 }
 
+/* exec >file: kept until csh's language ends (lang_end gives them back,
+ * the last first) */
+#define MAXEXECREDIR 8
+static void *execredirs[MAXEXECREDIR];
+static int nexecredir;
+
+static void execredir_keep(void *s)
+{
+    if (nexecredir < MAXEXECREDIR) execredirs[nexecredir++] = s;
+    else os_unredir(s);
+}
+
+static void execredir_end(void)
+{
+    while (nexecredir) os_unredir(execredirs[--nexecredir]);
+}
+
+/* command -v / -V names: what each would run; rc 1 when one is nothing */
+static int declkind(const char *w);
+static long cmd_v(Exp *e, int verbose)
+{
+    char ab[LINE_MAX], path[300];
+    int i;
+    long r = 0;
+    for (i = 2; i < e->nf; i++) {
+        const char *n = e->f[i].s;
+        if (os_getalias(n, ab, sizeof ab) >= 0) {
+            if (verbose) { sh_print(n); sh_print(" is aliased to `"); sh_print(ab); sh_print("'\n"); }
+            else { sh_print("alias "); sh_print(n); sh_print("='"); sh_print(ab); sh_print("'\n"); }
+        } else if (findfunc(n)) {
+            sh_print(n); sh_print(verbose ? " is a function\n" : "\n");
+        } else if (builtin_find(n) >= 0 || declkind(n) >= 0) {
+            sh_print(n); sh_print(verbose ? " is a shell builtin\n" : "\n");
+        } else if (os_which(n, path, sizeof path)) {
+            if (verbose) { sh_print(n); sh_print(" is "); }
+            sh_print(path); sh_print("\n");
+        } else {
+            if (verbose) sh_error("command: not found:", n);
+            r = 1;
+        }
+    }
+    return r;
+}
+
 static int declkind(const char *w)
 {
     if (veq(w, "declare") || veq(w, "typeset")) return 0;
@@ -3102,7 +3266,7 @@ static long __attribute__((noinline)) run_simple(Node *n)
     Exp e;
     struct cmdline *c;
     char tmp[4][40];
-    int ntmp = 0, i, b, caps, k;
+    int ntmp = 0, i, b, caps, k, isexec = 0;      /* exec cmd: csh leaves after it */
     Old *old = NULL;
     long r = 0;
 
@@ -3145,9 +3309,32 @@ static long __attribute__((noinline)) run_simple(Node *n)
     {
         char *name = e.f[0].s, **argv;
         Func *f;
+        int plain = 0;                  /* command, exec: no alias or function */
+
+        while (e.nf && (!strcmp(e.f[0].s, "command") || !strcmp(e.f[0].s, "exec")) && !findfunc(e.f[0].s)) {
+            int cmd = e.f[0].s[0] == 'c';
+            if (cmd && e.nf > 1 && (!strcmp(e.f[1].s, "-v") || !strcmp(e.f[1].s, "-V"))) {
+                r = cmd_v(&e, e.f[1].s[1] == 'V');
+                goto done;
+            }
+            if (!cmd && e.nf == 1) {    /* exec >file: csh's own streams stay so */
+                void *s;
+                if (hasredir(c)) {
+                    if (!(s = os_redir(c))) { r = 20; goto done; }
+                    execredir_keep(s);
+                }
+                r = 0;
+                goto done;
+            }
+            if (e.nf == 1) { r = 0; goto done; }       /* command alone */
+            if (cmd) plain = 1; else isexec = plain = 1;
+            memmove(e.f, e.f + 1, (e.nf - 1) * sizeof *e.f);
+            e.nf--;
+            name = e.f[0].s;
+        }
 
         /* an alias (the ROM's Alias, or alias x=...): its text, the rest after it */
-        if (!e.f[0].quoted && naliasing < 8 && !inalias(name) && os_getalias(name, ab, sizeof ab) >= 0) {
+        if (!plain && !e.f[0].quoted && naliasing < 8 && !inalias(name) && os_getalias(name, ab, sizeof ab) >= 0) {
             Str t;
             char *br = strstr(ab, "[]");
             void *s = NULL;
@@ -3162,7 +3349,7 @@ static long __attribute__((noinline)) run_simple(Node *n)
             if (s) os_unredir(s);
             goto done;
         }
-        f = findfunc(name);
+        f = plain ? NULL : findfunc(name);
         b = f ? -1 : builtin_find(name);
         if (sh_opt_x || f || b >= 0) globall(&e, 1);      /* csh's own see the files (an Amiga command: amigaline) */
         if (sh_opt_x) {
@@ -3226,6 +3413,7 @@ static long __attribute__((noinline)) run_simple(Node *n)
 done:
     for (i = 0; i < ntmp; i++) os_delete(tmp[i]);
 done0:
+    if (isexec && !aborted) { sh_exiting = 1; sh_exitrc = r; }     /* exec cmd: csh is done after it */
     procdone();
     giveback(old);
     afree(&ar);
@@ -3630,18 +3818,25 @@ static long __attribute__((noinline)) exec_case(Node *n)
     char *w = expand1(&ar, n->name, NULL);
     Case *c;
     long r = 0;
+    int any = 0, fall = 0;
     for (c = n->cases; c; c = c->next) {
-        int i, hit = 0;
+        int i, hit = fall;
         for (i = 0; i < c->npats && !hit; i++) {
             Exp pe;
             memset(&pe, 0, sizeof pe); pe.ar = &ar; pe.patmode = 1;
             expand(&pe, c->pats[i], 0);
             hit = gmatch(pe.nf ? pe.f[0].s : "", w, 0);
         }
-        if (hit) { r = exec(c->body); break; }
+        fall = 0;
+        if (!hit) continue;
+        any = 1;
+        r = c->body ? exec(c->body) : 0;
+        if (c->end == 1) fall = 1;          /* ;& the next body too */
+        else if (c->end != 2) break;        /* ;; done; ;;& tries the next patterns */
+        if (aborted || sh_exiting || sh_return || sh_break || sh_continue) break;
     }
     afree(&ar);
-    if (!c) setrc(0);
+    if (!any) setrc(0);
     return r;
 }
 
@@ -4172,6 +4367,7 @@ void lang_end(void)
     arrs = NULL;
     for (o = ros; o; o = on) { on = o->next; os_free(o); }
     ros = NULL;
+    execredir_end();
     traps_free();
     os_free(hookbuf); hookbuf = NULL; hookn = hookcap = 0;
     afree(&posar);

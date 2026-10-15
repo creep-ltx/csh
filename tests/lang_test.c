@@ -237,7 +237,16 @@ int main(void)
     run("set -- a b; shift -1; echo $? $1; shift x; echo $?", "csh: shift: not a count: -1\n10 a\ncsh: shift: not a count: x\n10\n");
     run("echo I want to go; echo hi NOLINE; echo a TO b; echo -n to; echo", "I want to go\n[echo|hi NOLINE]\n[echo|a TO b]\nto\n");
     run("alias foo bar=baz", "[alias|foo bar=baz]\n");
-    runin("x\n", "read -s a; echo $?", "csh: read: unknown option -s\n10\n");
+    runin("x\n", "read -k a; echo $?", "csh: read: unknown option -k\n10\n");
+    /* read -n -N -t -s (0.1b9) */
+    runin("abcdef\n", "read -n 2 a; read -n3 b; echo $a $b", "ab cde\n");
+    runin("ab\ncd\n", "read -n 5 a; echo [$a]; read b; echo [$b]", "[ab]\n[cd]\n");
+    runin("ab\ncd\n", "read -N 4 a; echo \"[$a]\"", "[ab\nc]\n");
+    runin("secret\n", "read -rs p; echo got $p", "got secret\n");
+    runin("", "read -t 1 a; echo $?", "142\n");
+    runin("y\n", "read -t 0.5 -n1 a; echo $? $a", "0 y\n");
+    runin("x\n", "read -t soon a; echo $?", "csh: read: not a time: soon\n10\n");
+    runin("x\n", "read -n; echo $?", "csh: read: a value is wanted after -n\n10\n");
     run("case aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab in *a*a*a*a*a*a*a*a*a*a*a*a*a*a*c) echo no;; *a*b) echo yes;; esac", "yes\n");
     run("for f in *.txt; do echo $f; done", "a.txt\nb.txt\n");
     run("return x", "csh: return: not a number: x\n");
@@ -278,6 +287,31 @@ int main(void)
     run("[[ a.txt -nt b.txt ]] || echo older; [[ a.txt -ot b.txt ]] && echo ot", "older\not\n");
     run("readonly r=5; r=6; echo $r; unset r; echo $r", "csh: readonly variable: r\n5\ncsh: readonly variable: r\n5\n");
     run("declare -r q=1; declare -p q; a=(x); declare -p a", "declare -r q=\"1\"\ndeclare -a a=([0]=\"x\")\n");
+    /* declare -i -l -u (0.1b9) */
+    run("declare -i n=2+3; echo $n; n=n*2; echo $n; n+=4; echo $n", "5\n10\n14\n");
+    run("declare -i n; n='7 / 2'; echo $n; declare -p n", "3\ndeclare -i n=\"3\"\n");
+    run("x=4; declare -i x; x+=1; echo $x", "5\n");
+    run("declare -l s=MiXed; echo $s; s=\xc5NGA; echo $s; declare -u t=abc; echo $t; declare -p t", "mixed\n\xe5nga\nABC\ndeclare -u t=\"ABC\"\n");
+    run("s=Hello; declare -u s; echo $s; declare +u s; s=Low; echo $s", "HELLO\nLow\n");
+    run("declare -ir k=3; declare -p k; k=4; echo $k", "declare -ir k=\"3\"\ncsh: readonly variable: k\n3\n");
+    run("declare -i a; a[1]=2*3; echo ${a[1]}", "6\n");
+    /* printf %q, ${x@Q} ${x@U} ${x@L} ${x@u} ${x@E} (0.1b9) */
+    run("printf '%q\\n' 'a b' \"it's\" '' 'Work:x.c'", "a\\ b\nit\\'s\n''\nWork:x.c\n");
+    run("printf '%q\\n' $'a\\tb'", "$'a\\tb'\n");
+    run("x=\"it's me\"; echo ${x@Q}; eval y=${x@Q}; echo \"$y\"", "'it'\\''s me'\nit's me\n");
+    run("x='hello World'; echo ${x@U} ${x@L} ${x@u}", "HELLO WORLD hello world Hello World\n");
+    run("x='a\\tb'; echo \"${x@E}\"", "a\tb\n");
+    /* case ;& and ;;& (0.1b9) */
+    run("case b in a) echo A;; b) echo B;& c) echo C;; d) echo D;; esac", "B\nC\n");
+    run("case abc in a*) echo 1;;& *c) echo 2;;& x*) echo 3;; *) echo 4;; esac", "1\n2\n4\n");
+    run("case x in x) echo X;& esac; echo end", "X\nend\n");
+    /* command, exec (0.1b9) */
+    run("echo() { printf 'mine\\n'; }; echo a; command echo b; unset -f echo", "mine\nb\n");
+    run("alias List='echo no'; command List x", "[List|x]\n");
+    run("command -v echo List nothere; echo $?", "echo\nC:List\n1\n");
+    run("f() { :; }; alias ll='List DIRS'; command -V f echo List ll", "f is a function\necho is a shell builtin\nList is C:List\nll is aliased to `List DIRS'\n");
+    run("x=$(exec List y; echo not); echo \"[$x]\" $?", "[[List|y]] 0\n");
+    run("( exec false; echo not ); echo $?", "1\n");
     run("v=out; f() { declare v=in; echo $v; }; f; echo $v", "in\nout\n");
     run("x='a  b'; f() { local y=$x; echo \"$y\"; }; f", "a  b\n");
     run("trap 'echo bye' EXIT; trap; trap - EXIT; trap", "trap -- 'echo bye' EXIT\n");

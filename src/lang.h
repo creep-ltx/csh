@@ -29,6 +29,8 @@ void os_flush(void);                             /* what os_write gathered, sent
 void os_tty(const char *s, int n);               /* to csh's own console, whatever is redirected (time) */
 void os_err(const char *s, int n);               /* the error stream of the moment (2>, else the console) */
 int os_readline(char *buf, int size);            /* from the input of the moment; -1 = end */
+int os_readkeys(char *buf, int size, int n, int exact, long ticks, int silent);  /* read -n -N -t -s: -1 end, -2 time out */
+int os_which(const char *name, char *buf, int size);   /* an Amiga command's file (command -v); 0 = none */
 void *os_redir(struct cmdline *c);               /* open + select; NULL = failed (said) */
 void os_unredir(void *save);
 void *os_capture(void);                          /* $(...): the output to a file */

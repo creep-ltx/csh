@@ -52,6 +52,7 @@ struct prepared {
 };
 int run_prepare(struct cmdline *c, struct prepared *p);
 int run_exists(const char *name);
+int run_which(const char *name, char *buf, int size);   /* command -v */
 void run_end(void);             /* csh ends: run.c's FileInfoBlock given back */
 void run_release(struct prepared *p, int detached);
 LONG run_prepared(struct cmdline *c, struct prepared *p);

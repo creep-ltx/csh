@@ -399,6 +399,26 @@ int run_exists(const char *name)
     return f == F_FILE;
 }
 
+/* Where a command would be found (command -v): its file's full name, or
+ * the name of a resident one; 0 when there is none. */
+int run_which(const char *name, char *buf, int size)
+{
+    struct Segment *seg = NULL;
+    BPTR lock = 0, where;
+    const char *lname;
+    int f;
+    if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 0;
+    f = find(name, 0, &seg, &lock, fib, &where, &lname);
+    if (f == F_RES) {
+        if (seg->seg_UC > 0) resident_done(seg);
+        strncpy(buf, name, size - 1); buf[size - 1] = 0;
+        return 1;
+    }
+    if (f == F_FILE && lock && NameFromLock(lock, buf, size)) { UnLock(lock); return 1; }
+    if (lock) UnLock(lock);
+    return 0;
+}
+
 /* For a pipe stage or a job: the command found and loaded, not run (a
  * process of its own runs it, job.c). Fills *p; returns 0 when it cannot
  * be run (said, rc set). A script or ARexx file is given as a ROM Shell

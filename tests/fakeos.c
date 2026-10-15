@@ -134,6 +134,30 @@ long os_run(struct cmdline *c)
 }
 
 
+/* read -n -N -t -s from the fake input: no input with a time limit is a
+ * time out */
+int os_readkeys(char *buf, int size, int n, int exact, long ticks, int silent)
+{
+    int got = 0;
+    (void)silent;
+    if (!*input) return ticks >= 0 ? -2 : -1;
+    while (*input && got < size - 1 && (!n || got < n)) {
+        char c = *input++;
+        if (c == '\n' && !exact) { if (!n) buf[got++] = c; break; }
+        buf[got++] = c;
+    }
+    buf[got] = 0;
+    return got;
+}
+
+/* a name with a capital is an Amiga command in C: */
+int os_which(const char *name, char *buf, int size)
+{
+    if (name[0] < 'A' || name[0] > 'Z') return 0;
+    snprintf(buf, size, "C:%s", name);
+    return 1;
+}
+
 int os_readline(char *buf, int size)
 {
     const char *nl;

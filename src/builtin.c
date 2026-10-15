@@ -262,7 +262,7 @@ static void fmtfloat(Dec v, char conv, int prec, int alt, char *out, int size)
     }
 }
 
-/* printf [-v var] FORMAT [ARGS]: %s %b %c %d %i %u %x %X %o %f %e %g %%,
+/* printf [-v var] FORMAT [ARGS]: %s %b %q %c %d %i %u %x %X %o %f %e %g %%,
  * flags - 0 +, width, .precision; the format again while arguments are left. */
 static long b_printf1(int argc, char **argv);
 
@@ -371,6 +371,42 @@ static long b_printf1(int argc, char **argv)
                     if (left) pad(w - l, 0);
                     continue;
                 }
+                if (conv == 'q') {           /* bash's %q: a\ b, '' for nothing, $'\n' for control bytes */
+                    char *qb = os_alloc(4 * strlen(arg) + 8);
+                    const char *x;
+                    int ctl = 0;
+                    if (!qb) return 20;
+                    for (x = arg; *x; x++) if ((unsigned char)*x < 32 || *x == 127) ctl = 1;
+                    if (!*arg) strcpy(qb, "''");
+                    else if (ctl) {
+                        static const char hex[] = "0123456789abcdef";
+                        l = 0; qb[l++] = '$'; qb[l++] = '\'';
+                        for (x = arg; *x; x++) {
+                            unsigned char c = *x;
+                            const char *e2 = c == '\n' ? "\\n" : c == '\t' ? "\\t" : c == '\r' ? "\\r" : c == 27 ? "\\E"
+                                           : c == '\'' ? "\\'" : c == '\\' ? "\\\\" : NULL;
+                            if (e2) { strcpy(qb + l, e2); l += 2; }
+                            else if (c < 32 || c == 127) { qb[l++] = '\\'; qb[l++] = 'x'; qb[l++] = hex[c >> 4]; qb[l++] = hex[c & 15]; }
+                            else qb[l++] = c;
+                        }
+                        qb[l++] = '\''; qb[l] = 0;
+                    } else {
+                        l = 0;
+                        for (x = arg; *x; x++) {
+                            unsigned char c = *x;
+                            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c >= 0x80
+                                  || strchr("_./:@%+,=-", c))) qb[l++] = '\\';
+                            qb[l++] = c;
+                        }
+                        qb[l] = 0;
+                    }
+                    l = strlen(qb);
+                    if (!left) pad(w - l, 0);
+                    sh_printn(qb, l);
+                    if (left) pad(w - l, 0);
+                    os_free(qb);
+                    continue;
+                }
                 sh_error("printf: unknown conversion in", argv[1]);
                 return 10;
             }
@@ -472,23 +508,63 @@ static long b_test(int argc, char **argv, int bracket)
     return v ? 0 : SH_FALSE;
 }
 
+/* seconds (0.5 too) in fiftieths; -1 when it is not a number */
+static long ticksof(const char *s)
+{
+    long t = 0, f = 0, d = 1;
+    if (!*s) return -1;
+    for (; *s >= '0' && *s <= '9'; s++) { t = t * 10 + *s - '0'; if (t > 1000000) return -1; }
+    if (*s == '.') for (s++; *s >= '0' && *s <= '9'; s++) if (d < 1000) { f = f * 10 + *s - '0'; d *= 10; }
+    if (*s) return -1;
+    return t * 50 + f * 50 / d;
+}
+
+/* read [-r] [-s] [-a name] [-p prompt] [-n N | -N N] [-t secs] [names]:
+ * options together (-rs, -n1) or apart. A time out gives 142, as bash. */
 static long b_read(int argc, char **argv)
 {
     char line[LINE_MAX], *p;
     const char *arr = NULL;
-    int i = 1, raw = 0, n, v;
+    int i = 1, raw = 0, n, v, nkeys = 0, exact = 0, silent = 0;
+    long ticks = -1;
     while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+        const char *o;
         if (!strcmp(argv[i], "--")) { i++; break; }
-        if (!strcmp(argv[i], "-r")) raw = 1;
-        else if (!strcmp(argv[i], "-a") && i + 1 < argc) arr = argv[++i];
-        else if (!strcmp(argv[i], "-ra") && i + 1 < argc) { raw = 1; arr = argv[++i]; }
-        else if (!strcmp(argv[i], "-p") && i + 1 < argc) sh_print(argv[++i]);
-        else { sh_error("read: unknown option", argv[i]); return 10; }
+        for (o = argv[i] + 1; *o; o++) {
+            const char *val = NULL;
+            if (strchr("apntN", *o)) {          /* takes a value: the rest, or the next word */
+                if (o[1]) val = o + 1;
+                else if (i + 1 < argc) val = argv[++i];
+                else { sh_error("read: a value is wanted after", argv[i]); return 10; }
+            }
+            switch (*o) {
+            case 'r': raw = 1; break;
+            case 's': silent = 1; break;
+            case 'a': arr = val; break;
+            case 'p': sh_print(val); break;
+            case 'n': case 'N': {
+                long k;
+                if (!num(val, &k) || k < 0) { sh_error("read: not a number:", val); return 10; }
+                nkeys = k; exact = *o == 'N';
+                if (!nkeys) return 0;           /* -n 0: nothing read */
+                break;
+            }
+            case 't':
+                if ((ticks = ticksof(val)) < 0) { sh_error("read: not a time:", val); return 10; }
+                break;
+            default: { char b[3] = { '-', *o, 0 }; sh_error("read: unknown option", b); return 10; }
+            }
+            if (val) break;
+        }
         i++;
     }
-    n = os_readline(line, sizeof line);
+    if (nkeys || ticks >= 0 || silent) {
+        if (nkeys >= (int)sizeof line) nkeys = sizeof line - 1;
+        n = os_readkeys(line, sizeof line, nkeys, exact, ticks, silent);
+        if (n == -2) return 142;
+    } else n = os_readline(line, sizeof line);
     if (n < 0) return SH_FALSE;
-    if (n == (int)sizeof line - 1 && line[n - 1] != '\n') {
+    if (!nkeys && n == (int)sizeof line - 1 && line[n - 1] != '\n') {
         /* longer than csh's line: the rest is read and left out (not the next read's) */
         char rest[256];
         int k;

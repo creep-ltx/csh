@@ -20,8 +20,8 @@ note in its design.md or a message, never an edit there. Shared things:
 - **Next for csh, in this order (the user's go, 2026-10-15: "calm and controlled"):**
   (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
   drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
-  (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) the small bash bits
-  in "What csh still lacks"; (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
+  (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) ~~the small bash
+  bits~~ done (0.1b9); (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
   language as a part loaded on first use (last: it touches everything).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
 
@@ -41,6 +41,15 @@ named places - not offered). (b) the menu (bash's menu-complete): after a list, 
 name in, Tab again the next in its place, Shift+Tab (`completeback`, a new default key: defaults
 are read before csh.keys, so it arrives by itself) the one before, any other key keeps it.
 Test: `tests/comptest.sh` (types into a CON: window).
+**Also in 0.1b9, bash's small parts:** `declare -i/-l/-u` (and `+i/+l/+u`; attributes kept with
+-r in the RO list as AT_ bits, applied in sh_set/elem_set by attr_val; `x+=n` adds on an -i;
+`declare -p` prints the flags in bash's order); `printf %q` (a\ b, '', $'..' for control
+bytes); `${x@Q}` `${x@U}` `${x@L}` `${x@u}` `${x@E}`; `case` `;&` and `;;&`; `command` (no
+alias or function; `-v`/`-V` say what a name is, os_which -> run_which) and `exec` (cmd: csh
+leaves after it; redirections alone: kept until the language ends); `read -n N`, `-N N`,
+`-t SECS` (0.5 too; time out = 142), `-s` (os_readkeys: raw mode on a console, echoes itself,
+Backspace with -s), options together (-rs, -n1). PC tests 284; `tests/readtest.sh` types into a
+CON: window.
 
 **0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
 C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
@@ -108,7 +117,8 @@ saved layout can start the program again with its arguments.
   modular, load on demand); never measured slower to start (84 ms either way on the A1200).
 - jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C; `$!`, `disown`, `wait -n` missing.
 - completion: the menu does not mark the name in the list; `**/` (globstar), extglob.
-- `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
+- `read -d`, `declare -n` (namerefs), `${x@A}`, `${x@P}`; `exec` cannot replace csh (no exec on
+  the Amiga): it runs the command and leaves.
 - no git: `$(...)` in PROMPT is the way to show anything else.
 - The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.
 
