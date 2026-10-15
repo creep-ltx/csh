@@ -18,7 +18,8 @@ note in its design.md or a message, never an edit there. Shared things:
   quit test programs and say when the screen is free. Installing in C:/LIBS: needs the user's go.
 - **Ahiru and Maki's FileColours** is on both lists: the csh session does it (in those repos), not CUtils.
 - **Next for csh, in this order (the user's go, 2026-10-15: "calm and controlled"):**
-  (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) FileColours in Maki (Ahiru done, 0.3b3);
+  (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
+  drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
   (3) completion of a keyword's value (`TO`, `LFORMAT`), menu selection; (4) the small bash bits
   in "What csh still lacks"; (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
   language as a part loaded on first use (last: it touches everything).
@@ -101,7 +102,6 @@ saved layout can start the program again with its arguments.
 - completion: a keyword's value (`TO`, `LFORMAT`), menu selection; `**/` (globstar), extglob.
 - `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
 - no git: `$(...)` in PROMPT is the way to show anything else.
-- Maki does not read ENVARC:FileColours yet (Ahiru does since 0.3b3, 2026-10-15; `ls` is CUtils').
 - The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
