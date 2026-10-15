@@ -16,7 +16,7 @@ $W run --detach 'NewShell "CON:0/20/640/200/cmdline test" FROM RAM:clsc' >/dev/n
 $W wait --window 'cmdline test' >/dev/null 2>&1 || sleep 3
 sleep 1
 for l in 'Get _CMDLINE >>RAM:clout' 'Get   _CMDLINE   >>RAM:clout' 'echo x | Get _CMDLINE >>RAM:clout' \
-         'RAM:clcs a b' 'RAM:clas' 'Execute RAM:clas' 'echo "after [$_CMDLINE]" >>RAM:clout' 'exit'; do
+         'RAM:clcs a b' 'RAM:clas' 'Execute RAM:clas' 'echo "after [$_CMDLINE]" >>RAM:clout' 'exit' 'EndCLI'; do
   $W key type --enter "$l" >/dev/null; sleep 1
 done
 got=$($W run 'Type RAM:clout' 2>&1)
