@@ -7,6 +7,24 @@ read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
+**Parallel sessions (set up 2026-10-15, the user's wish):** CTerm, csh and CUtils may each have a
+session running at the same time. Stay in your own repo: CTerm's session owns `~/Projects/CTerm`,
+csh's owns `~/Projects/CShell`, CUtils' owns `~/Projects/CUtils`; a change another one needs is a
+note in its design.md or a message, never an edit there. Shared things:
+- **FS-UAE on port 1240** (`~/Projects/CTerm/tests/files/uae.sh`) is used by all three: work in
+  your own RAM: drawer (CUtils: `S=x tests/run.sh`), never `uae.sh stop`/restart it without
+  asking the others (`ListAgents`, then a message); a crash there - tell the others before restarting.
+- **The A1200** (Wasabi): message the others before installing, rebooting or restarting wasabid;
+  quit test programs and say when the screen is free. Installing in C:/LIBS: needs the user's go.
+- **Ahiru and Maki's FileColours** is on both lists: the csh session does it (in those repos), not CUtils.
+- **Next for csh, in this order:** (1) `_CMDLINE` - while a program runs, csh keeps its whole
+  command line in the local variable `_CMDLINE` (set where cli_CommandName is set in run.c,
+  removed after); the CTerm session reads it for saved layouts, so tell it when it is in and in
+  which version; (2) size - the language as a part loaded on first use; (3) jobs: Ctrl-Z, `$!`,
+  `disown`, `wait -n`; (4) completion of a keyword's value (`TO`, `LFORMAT`), menu selection;
+  (5) the small bash bits in "What csh still lacks"; (6) FileColours in Ahiru and Maki.
+  Install on the A1200 only when the user says so (as always, csh and cshell together).
+
 **0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
 C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
 a name, a -flag) is passed to the kill command (CUtils' kill: by CLI number, 0x address or name),
