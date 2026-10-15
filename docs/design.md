@@ -239,6 +239,16 @@ rules (run.c builtin(): ReadArgs "FROM,ARGS/M,COMMAND=-C/K" - a plain `C=-C` ali
 argument "C" as the keyword). Tested with no C:csh at all: jobs, loops and functions in pipes, a
 #!csh stage, csh -c/FROM/COMMAND through wasabi run (rc kept); and the fallback (ROM Shell, C:csh):
 all tests green in both, bench unchanged. PC tests 291.
+**Step 3 done (FS-UAE): the one file lives in `L:csh`** (the user's idea; Workbench 1.3 kept its
+Shell the same way, L:Shell-Seg - the Guru Book), **pure bit on, executable bit off**
+(`Protect L:csh p ADD`, `Protect L:csh e SUB`; 3.2's Protect refuses `+p -e` in one go). L: is in
+no command search, and without the e bit even `L:csh` typed gives "file is not executable".
+Without that bit taken away, `L:csh` run as a command took the whole test machine down (the
+Shell code waits for a start-up packet that never comes). `Resident shell L:csh REPLACE` takes it
+as it is. Checked: in the ROM Shell `csh` -> Unknown command, `L:csh` -> not executable, no hang;
+in csh `csh` -> its note, `L:csh` -> not executable, `csh -c` works; every Shell start (Execute(),
+System() both ways, NewShell, wasabi run, a CTerm tab with no shell= line) runs L:csh's code and a
+`f &` job goes through it - with no other csh file on the machine.
 Next steps (agreed): (3) a safe stop when the Shell file is started as a command,
 (4) cshell renamed csh, one build, User-Startup does REPLACE + useshell + execshell, CTerm drops
 shell=csh (with the CTerm session).
