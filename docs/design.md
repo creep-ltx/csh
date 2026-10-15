@@ -25,7 +25,15 @@ note in its design.md or a message, never an edit there. Shared things:
   language as a part loaded on first use (last: it touches everything).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
 
-**0.1b9 (2026-10-15, not installed): `_CMDLINE`** - while a program started from a line typed at
+**0.1b9 INSTALLED on the A1200 2026-10-15 (the user asked): C:csh, C:cshell (0.1b8 kept as
+C:csh-0.1b8.bak, C:cshell-0.1b8.bak), C:useshell. To update cshell while it is the Shell:
+`Resident shell C:cshell REPLACE` then **`useshell`**: REPLACE swaps the system "shell" entry only
+while it is the ROM's; with cshell there it adds a plain resident "shell" that DOS never uses
+(0.1b8 was never really live: new Shells kept 0.1b7 until a reboot). useshell copies that entry's
+code into the system entry (tools/useshell.c; the old code stays in memory until a reboot). The
+boot (S:User-Startup, the ROM Shell still in the entry) needs only the REPLACE.
+
+**0.1b9: `_CMDLINE`** - while a program started from a line typed at
 the prompt runs, csh's process has the local variable `_CMDLINE` = that line (name and arguments,
 without redirections; a pipe's whole line; a script started at the prompt keeps its own line, not
 its commands'). Gone when it ends. Not set for lines of scripts or `csh FROM` (it cost 3-8% in
