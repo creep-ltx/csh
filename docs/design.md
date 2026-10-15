@@ -232,6 +232,13 @@ run apart.
   window and a CTerm tab are csh.
 - Nothing starts csh as a command: `csh FROM/COMMAND/-c` and `csh` alone are csh's own command; a
   job or pipe stage of csh's own and a #!csh stage go to the system Shell (step 2 below).
+- **At the very top of S:Startup-Sequence instead** (tried 2026-10-15, the user asked; above the
+  LoadModule lines and SetPatch): boots the same - 12.0 s to wasabid against 12.1 without csh, the
+  same assigns, the same processes (the "Workbench Rexx Handler"s seen only around an ARexx message,
+  in every setup), the WORKBENCH port there. Nothing in the Startup-Sequence starts a Shell before
+  User-Startup (its lines run in the ROM's boot Shell; `Execute S:User-Startup` is the internal
+  command, same process), so the top buys nothing; User-Startup is the user's own file (the top of
+  Startup-Sequence is AmigaOS's).
 - Updating: the same two lines; Shells already open keep the old code (in memory till a reboot).
 - Tests: tests/install.sh (sourced by each test) does what User-Startup does; pairs.sh and
   bench.sh first measure the ROM Shell, so they want a fresh machine (they check: probe/whoshell).
