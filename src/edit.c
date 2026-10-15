@@ -575,6 +575,7 @@ int edit_line(const char *p, char *line, int size)
             continue;
         }
         if (act != A_PREV && act != A_NEXT && act != A_FIRST && act != A_LAST) navigating = 0;
+        if (act != A_COMPLETE && act != A_COMPLETEBACK) comp_menuend();     /* any other key keeps the name */
         switch (act) {
         case A_LEFT: if (cur > 0) cur--; break;
         case A_RIGHT:
@@ -622,8 +623,10 @@ int edit_line(const char *p, char *line, int size)
         case A_LASTARG: lastarg(); break;
         case A_SEARCH: if (search()) { finish(); goto done; } continue;
         case A_COMPLETE:
+        case A_COMPLETEBACK:
             suglen = 0;
-            if (comp_complete(buf, &len, &cur, sizeof buf - 1) && comp_listing()) fresh();
+            if (comp_menu()) comp_cycle(buf, &len, &cur, sizeof buf - 1, act == A_COMPLETE ? 1 : -1);
+            else if (comp_complete(buf, &len, &cur, sizeof buf - 1) && comp_listing()) fresh();
             break;
         case A_CLEAR:
             /* CTerm: up to the top, clear below - its FF, CSI H and CSI 2J

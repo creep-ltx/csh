@@ -43,7 +43,7 @@ enum {
     A_NONE, A_LEFT, A_RIGHT, A_WORDLEFT, A_WORDRIGHT, A_START, A_END,
     A_BACKSPACE, A_DELETE, A_DELWORDLEFT, A_DELWORDRIGHT, A_KILLEND, A_KILLSTART,
     A_YANK, A_PREV, A_NEXT, A_SEARCH, A_COMPLETE, A_ACCEPT, A_SUGGEST, A_SUGGESTWORD,
-    A_CLEAR, A_CANCEL, A_EOF, A_TRANSPOSE, A_FIRST, A_LAST, A_LASTARG,
+    A_CLEAR, A_CANCEL, A_EOF, A_TRANSPOSE, A_FIRST, A_LAST, A_LASTARG, A_COMPLETEBACK,
     A_COUNT
 };
 extern char keys_bad[120];
@@ -75,6 +75,9 @@ void comp_end(void);                /* csh ends: the tables freed, C:'s locks gi
 int comp_complete(char *line, int *len, int *cur, int max);   /* Tab; TRUE if it changed */
 void comp_forget(void);             /* the command table is built again when next needed */
 int comp_listing(void);             /* a list was shown under the line */
+int comp_menu(void);                /* that list can be gone through: Tab, Shift+Tab */
+void comp_menuend(void);
+int comp_cycle(char *line, int *len, int *cur, int max, int step);   /* the next (1) or previous (-1) name in */
 int comp_takesmany(const char *name);   /* its template: 1 several names (/M), 0 one, -1 none seen */
 
 /* edit.c */

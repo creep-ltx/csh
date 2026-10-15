@@ -22,7 +22,7 @@ static const char *const actnames[A_COUNT] = {
     "none", "left", "right", "wordleft", "wordright", "start", "end",
     "backspace", "delete", "delwordleft", "delwordright", "killend", "killstart",
     "yank", "prev", "next", "search", "complete", "accept", "suggest", "suggestword",
-    "clear", "cancel", "eof", "transpose", "first", "last", "lastarg"
+    "clear", "cancel", "eof", "transpose", "first", "last", "lastarg", "completeback"
 };
 
 static const char defaults[] =
@@ -33,7 +33,8 @@ static const char defaults[] =
     ";\n"
     "; Actions: left right wordleft wordright start end backspace delete delwordleft\n"
     "; delwordright killend killstart yank prev next search complete accept suggest\n"
-    "; suggestword clear cancel eof transpose first last lastarg\n"
+    "; suggestword clear cancel eof transpose first last lastarg completeback\n"
+    "; (after a list of names, complete puts them in one by one, completeback goes back)\n"
     "\n; moving (right and wordright at the end take the grey suggestion)\n"
     "<Left> left\n<Right> right\n<C-b> left\n<C-f> right\n"
     "<A-Left> wordleft\n<A-Right> wordright\n<A-b> wordleft\n<A-f> wordright\n"
@@ -48,7 +49,7 @@ static const char defaults[] =
     "<Up> prev\n<Down> next\n<C-p> prev\n<C-n> next\n<C-r> search\n"
     "<C-Up> first\n<C-Down> last\n<PgUp> first\n<PgDn> last\n<A-.> lastarg\n"
     "\n; the rest\n"
-    "<Tab> complete\n<Enter> accept\n<C-j> accept\n<C-l> clear\n<C-c> cancel\n<Esc> cancel\n"
+    "<Tab> complete\n<S-Tab> completeback\n<Enter> accept\n<C-j> accept\n<C-l> clear\n<C-c> cancel\n<Esc> cancel\n"
     "<C-d> eof\n<C-\\> eof\n<F1> suggest\n";
 
 typedef struct { int key, act; } Bind;

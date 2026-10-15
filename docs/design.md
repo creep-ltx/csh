@@ -20,7 +20,7 @@ note in its design.md or a message, never an edit there. Shared things:
 - **Next for csh, in this order (the user's go, 2026-10-15: "calm and controlled"):**
   (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
   drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
-  (3) completion of a keyword's value (`TO`, `LFORMAT`), menu selection; (4) the small bash bits
+  (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) the small bash bits
   in "What csh still lacks"; (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
   language as a part loaded on first use (last: it touches everything).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
@@ -33,6 +33,14 @@ tests/bench.sh there, and CTerm has no use for them): `csh.typed`, set in runtyp
 os_run() (the language: Execute's lines run inside it, script_now) and run_seg() (the ROM rules),
 the outermost one wins; job.c's lastrun() for pipes. Test: `tests/cmdline.sh` (types into a CON:
 window: a test Amiga of your own). Told the CTerm session.
+**Also in 0.1b9, completion:** (a) a keyword's value - after a template word that takes one (`TO`
+of Copy's `TO/A`, any /K), Tab offers files, drawers and volumes but not the keywords; after a
+number (/N) it beeps; after `LFORMAT` it shows List's % codes; `TO=RAM:x` completes after the `=`.
+tplwords() keeps a letter before each word (S switch, K/N key with a value/number - offered; V/W
+named places - not offered). (b) the menu (bash's menu-complete): after a list, Tab puts its first
+name in, Tab again the next in its place, Shift+Tab (`completeback`, a new default key: defaults
+are read before csh.keys, so it arrives by itself) the one before, any other key keeps it.
+Test: `tests/comptest.sh` (types into a CON: window).
 
 **0.1b8 (2026-10-14, INSTALLED with C:cshell and `Resident shell C:cshell REPLACE`; 0.1b7 kept as
 C:csh-0.1b7.bak, C:cshell-0.1b7.bak):** `kill` with a target that is not a %job (a Shell's number,
@@ -99,7 +107,7 @@ saved layout can start the program again with its arguments.
 - size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
   modular, load on demand); never measured slower to start (84 ms either way on the A1200).
 - jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C; `$!`, `disown`, `wait -n` missing.
-- completion: a keyword's value (`TO`, `LFORMAT`), menu selection; `**/` (globstar), extglob.
+- completion: the menu does not mark the name in the list; `**/` (globstar), extglob.
 - `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
 - no git: `$(...)` in PROMPT is the way to show anything else.
 - The user uses csh daily on the A1200 (said 2026-10-15): ask what they ran into before new work.

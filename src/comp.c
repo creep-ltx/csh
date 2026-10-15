@@ -559,11 +559,13 @@ static int tplscore(const char *s, int n, int *len)
     return mods ? parts : 0;
 }
 
-/* The keywords worth offering: /S switches and /K keys (not the places of
- * a file or a number), by their longest name. */
+/* A template's keywords by their longest name, each after a letter that
+ * says what follows it: S nothing (a switch), K a value, N a number (/K
+ * keys: offered by Tab); V a value, W a number (named places such as
+ * TO/A: typed by some, not offered). */
 static char *tplwords(const char *t)
 {
-    char *w = os_alloc(strlen(t) + 2), *o = w;
+    char *w = os_alloc(2 * strlen(t) + 2), *o = w;
     const char *p = t;
     if (!w) return NULL;
     while (*p) {
@@ -572,12 +574,19 @@ static char *tplwords(const char *t)
         int k;
         for (eq = p; eq < p + n && *eq != '=' && *eq != '/'; eq++) ;
         sl = memchr(p, '/', n);
-        k = 0;
+        k = 'V';
         if (sl) {
             const char *m;
-            for (m = sl; m < p + n; m++) if (m[0] == '/' && ((m[1] | 32) == 's' || (m[1] | 32) == 'k')) k = 1;
+            int sw = 0, key = 0, num = 0;
+            for (m = sl; m < p + n; m++)
+                if (m[0] == '/') {
+                    if ((m[1] | 32) == 's') sw = 1;      /* (/T takes ON or OFF: a value) */
+                    if ((m[1] | 32) == 'k') key = 1;
+                    if ((m[1] | 32) == 'n') num = 1;
+                }
+            k = sw ? 'S' : key ? (num ? 'N' : 'K') : num ? 'W' : 'V';
         }
-        if (k) {        /* of NAME=OTHER, the longer (PAT, not P; LFORMATQUOTE, not LFQ) */
+        if (n > 0) {    /* of NAME=OTHER, the longer (PAT, not P; LFORMATQUOTE, not LFQ) */
             const char *best = p, *q = p, *end = sl ? sl : p + n;
             int bl = 0;
             while (q < end) {
@@ -586,7 +595,7 @@ static char *tplwords(const char *t)
                 if (e2 - q > bl) { bl = e2 - q; best = q; }
                 q = e2 < end ? e2 + 1 : end;
             }
-            memcpy(o, best, bl); o += bl; *o++ = 0;
+            if (bl) { *o++ = k; memcpy(o, best, bl); o += bl; *o++ = 0; }
         }
         p += n;
         if (*p == ',') p++;
@@ -757,11 +766,95 @@ static int special(char c)
     return c == ' ' || c == '\t' || strchr(";|&()<>$`'\"*?[]{}#~\\", c) != NULL;
 }
 
+/* The menu (bash's menu-complete): after a list, Tab puts its first name in
+ * the line, Tab again the next in its place, Shift+Tab the one before; any
+ * other key keeps it. What the list was made from is kept here. */
+static int menuws, menuidx, menudl, menuon;
+static char menudir[256], menuw0;
+
+/* The word at ws..cur replaced: the dir typed, the name as the match spells
+ * it (shared characters of it), its ending; in quotes when a character of it
+ * means something to csh ('...' when one means something inside "..." too).
+ * type: 0 a file or word (a space after), 1 a drawer (/), 2 a volume, -1
+ * not the whole name yet. */
+static int putword(char *line, int *len, int *cur, int max, int ws, char w0,
+                   const char *dir, int dl, const char *name, int shared, int type)
+{
+    char add[LINE_MAX];
+    int needq = 0, k, o;
+    char qc = '"';
+    if (w0 != '$') {
+        for (k = 0; k < shared; k++) if (special(name[k])) needq = 1;
+        for (k = 0; k < dl; k++) if (special(dir[k])) needq = 1;
+        for (k = 0; k < shared && needq; k++) if (strchr("$`\"\\", name[k])) qc = '\'';
+        for (k = 0; k < dl && needq; k++) if (strchr("$`\"\\", dir[k])) qc = '\'';
+    }
+    if (dl + shared + 4 >= (int)sizeof add) { term_outs("\a"); return 0; }
+    o = 0;
+    if (needq) add[o++] = qc;
+    memcpy(add + o, dir, dl); o += dl;
+    memcpy(add + o, name, shared); o += shared;
+    if (type == 1) add[o++] = '/';
+    else if (type == 0 && w0 == '$' && dl == 2) add[o++] = '}';
+    if (needq && type != 1 && type >= 0) add[o++] = qc;
+    if (type == 0) add[o++] = ' ';
+    add[o] = 0;
+    if (*len - (*cur - ws) + o >= max) return 0;
+    memmove(line + ws + o, line + *cur, *len - *cur);
+    memcpy(line + ws, add, o);
+    *len += o - (*cur - ws);
+    *cur = ws + o;
+    line[*len] = 0;
+    return 1;
+}
+
+int comp_menu(void) { return menuon; }
+void comp_menuend(void) { menuon = 0; }
+
+int comp_cycle(char *line, int *len, int *cur, int max, int step)
+{
+    if (!menuon || !nm) return 0;
+    menuidx = menuidx < 0 ? (step > 0 ? 0 : nm - 1) : (menuidx + step + nm) % nm;
+    return putword(line, len, cur, max, menuws, menuw0, menudir, menudl,
+                   mname[menuidx], strlen(mname[menuidx]), mtype[menuidx]);
+}
+
+/* List's LFORMAT codes: shown after LFORMAT, nothing put in the line */
+static void lformatlist(void)
+{
+    term_outs("\n%N name   %F full path   %P path (to the drawer)   %S name or path\n"
+              "%A bits   %B blocks   %L length   %K key   %C comment   %D date   %T time\n"
+              "%E ending   %M name without its ending   (in \"...\"; %% is a %)\n");
+    listed = 1;
+}
+
+/* The keyword the word at ws is the value of (TO RAM:x, or TO=RAM:x with
+ * eq the = in the word): its letter (K value, N number), 0 when none. */
+static int valueof(const char *line, int ws, const char *cmd, const char *word, int eq, char *key, int ksize)
+{
+    const char *k = cmdwords(cmd);
+    int s, e, n;
+    if (eq >= 0) { s = 0; n = eq; line = word; }
+    else {
+        for (e = ws; e > 0 && (line[e - 1] == ' ' || line[e - 1] == '\t'); e--) ;
+        for (s = e; s > 0 && line[s - 1] != ' ' && line[s - 1] != '\t'; s--) ;
+        n = e - s;
+    }
+    if (n <= 0 || n >= ksize) return 0;
+    for (; k && *k; k += strlen(k) + 1)
+        if (k[0] != 'S' && (int)strlen(k + 1) == n && ieq(k + 1, line + s, n)) {
+            memcpy(key, line + s, n); key[n] = 0;
+            return k[0] == 'W' ? 'N' : k[0] == 'V' ? 'K' : k[0];
+        }
+    return 0;
+}
+
 int comp_complete(char *line, int *len, int *cur, int max)
 {
-    char word[256], dir[256], add[LINE_MAX];
+    char word[256], dir[256];
     int ws = 0, i, q = 0, n, wl, dl = 0, type, shared, o;
     const char *p;
+    menuon = 0;
     for (i = 0; i < *cur; i++) {
         char c = line[i];
         if (q) { if (c == q) q = 0; }
@@ -782,6 +875,23 @@ int comp_complete(char *line, int *len, int *cur, int max)
         memcpy(dir, word, dl); dir[dl] = 0;
     } else {
         const char *sep = NULL;
+        char cmd[64], key[32];
+        int val = 0, eq = -1, cp = commandplace(line, ws), hascmd = !cp && cmdof(line, ws, cmd, sizeof cmd);
+        if (hascmd) {               /* KEY=value: the value is the word */
+            for (i = 0; i < wl && word[i] != '=' && word[i] != ':' && word[i] != '/'; i++) ;
+            if (i < wl && word[i] == '=') eq = i;
+            val = valueof(line, ws, cmd, word, eq, key, sizeof key);
+            if (!val) eq = -1;
+            else if (eq >= 0) {     /* the line's ws moves past the = (no quotes before it) */
+                int k, at = ws;
+                for (k = 0; k <= eq; at++) if (line[at] != '"' && line[at] != '\'') k++;
+                ws = at;
+                memmove(word, word + eq + 1, wl - eq);
+                wl -= eq + 1;
+            }
+            if (val == 'N') { term_outs("\a"); return 0; }     /* a number: nothing to offer */
+            if (val && ieq(key, "LFORMAT", 8)) { lformatlist(); return 1; }
+        }
         for (p = word; *p; p++) if (*p == ':' || *p == '/') sep = p;
         if (sep) {
             dl = sep - word + 1;
@@ -789,18 +899,17 @@ int comp_complete(char *line, int *len, int *cur, int max)
             mfiles(dir, word + dl, wl - dl);
         } else {
             dir[0] = 0;
-            if (commandplace(line, ws)) mcommands(word, wl);
+            if (cp) mcommands(word, wl);
             else {
-                char cmd[64];
                 mfiles("", word, wl);
                 mdevices(word, wl);
-                if (cmdof(line, ws, cmd, sizeof cmd)) {    /* the command's own keywords */
+                if (hascmd && !val) {      /* the command's own keywords (not where a value goes) */
                     const char *k = cmdwords(cmd);
                     for (; k && *k; k += strlen(k) + 1)
-                        if (iprefix(k, word, wl)) madd(k, strlen(k), 0);
+                        if ((k[0] == 'S' || k[0] == 'K' || k[0] == 'N') && iprefix(k + 1, word, wl)) madd(k + 1, strlen(k + 1), 0);
                 }
             }
-            if (commandplace(line, ws)) {
+            if (cp) {
                 /* drawers here too: a drawer typed alone is a CD */
                 int before = nm, k;
                 mfiles("", word, wl);
@@ -825,38 +934,15 @@ int comp_complete(char *line, int *len, int *cur, int max)
             shared = k;
         }
         type = -1;
-        if (shared <= n) { showlist(); return 1; }
-    }
-    /* the word again: the dir typed, the name as the match spells it, its
-     * ending; in quotes when a character of it means something to csh
-     * ('...' when one means something inside "..." too) */
-    {
-        int needq = 0, k;
-        char qc = '"';
-        if (word[0] != '$') {
-            for (k = 0; k < shared; k++) if (special(mname[0][k])) needq = 1;
-            for (k = 0; k < dl; k++) if (special(dir[k])) needq = 1;
-            for (k = 0; k < shared && needq; k++) if (strchr("$`\"\\", mname[0][k])) qc = '\'';
-            for (k = 0; k < dl && needq; k++) if (strchr("$`\"\\", dir[k])) qc = '\'';
+        if (shared <= n) {
+            showlist();
+            /* the menu: Tab again puts the names in, one by one */
+            menuon = 1; menuidx = -1; menuws = ws; menuw0 = word[0];
+            menudl = dl; memcpy(menudir, dir, dl); menudir[dl] = 0;
+            return 1;
         }
-        if (dl + shared + 4 >= (int)sizeof add) { term_outs("\a"); return 0; }
-        o = 0;
-        if (needq) add[o++] = qc;
-        memcpy(add + o, dir, dl); o += dl;
-        memcpy(add + o, mname[0], shared); o += shared;
-        if (type == 1) add[o++] = '/';
-        else if (type == 0 && word[0] == '$' && dl == 2) add[o++] = '}';
-        if (needq && type != 1 && type >= 0) add[o++] = qc;
-        if (type == 0) add[o++] = ' ';
-        add[o] = 0;
     }
-    if (*len - (*cur - ws) + o >= max) return 0;
-    memmove(line + ws + o, line + *cur, *len - *cur);
-    memcpy(line + ws, add, o);
-    *len += o - (*cur - ws);
-    *cur = ws + o;
-    line[*len] = 0;
-    return 1;
+    return putword(line, len, cur, max, ws, word[0], dir, dl, mname[0], shared, type);
 }
 
 /* csh ends: the tables, the matches, the keywords freed; C:'s locks back. */
