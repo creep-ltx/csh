@@ -218,6 +218,19 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+**Towards ONE file, C:csh (the user's plan, 2026-10-15): step 1 done in FS-UAE** - point
+Execute()'s Shell (the BootShell entry) at cshell after the boot: `tests/probe/execshell` copies
+the system "shell" entry's seg_Seg into BootShell's. Then (tests/probe/execwho + whoshell, which
+reads the shell process's pr_SegList 3/4: ROM or RAM) Execute(), a plain System(), System() with
+SYS_UserShell, Run and NewShell all run cshell; System()'s rc comes back (Quit 7 -> 7). CTerm 0.3b47
+with no `shell=` line: every tab IS cshell (~143 KB a tab, was ~154 with csh on top), `exit` closes
+the tab in one go, quitting CTerm ends its tab Shells. langtest, jobtest, cmdline green, 10 System()
+shells leave 0 bytes. Not yet tried: setting it from S:User-Startup during the boot (the boot Shell
+must stay the ROM's: "csh in a ROM"). Next steps (agreed): (2) background jobs and `csh FROM/COMMAND`
+without starting C:csh as a command, (3) a safe stop when the Shell file is started as a command,
+(4) cshell renamed csh, one build, User-Startup does REPLACE + useshell + execshell, CTerm drops
+shell=csh (with the CTerm session).
+
 **csh and cshell: two files, one code (2026-10-15; the user: "can't it be one?")**
 - `C:cshell` - the system Shell (`Resident shell C:cshell REPLACE`, then `useshell` when cshell was
   already the Shell): its start-up (shellstart.S) takes DOS's start-up packet first.

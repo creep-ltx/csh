@@ -17,3 +17,6 @@ tests/probe/peek
 tests/probe/segs
 tests/probe/phead
 /useshell
+tests/probe/execshell
+tests/probe/whoshell
+tests/probe/execwho
