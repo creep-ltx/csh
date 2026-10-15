@@ -220,6 +220,19 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
+**INSTALLED on the A1200 2026-10-15 (the user said go; rebooted):** L:csh 0.1b11 (p, not e),
+C:useshell (old: C:useshell-0.1b10.bak), S:User-Startup's CShell block = `useshell L:csh`
+(old block: S:User-Startup.bak-0.1b10), `shell=csh` taken out of ENV:/ENVARC:CTerm.prefs
+(ENVARC:CTerm.prefs.bak-shellcsh). After the reboot: both entries in RAM (csh), Execute()/System()
+both ways run it, Quit 7 -> 7; Wasabi's checks (wait up, ping, Search rc 5, Echo, --detach at
+once, --max-time 3 -> 124, rexx say/exit 3) all right; CTerm 0.3b47: tabs are csh, a saved
+layout keeps a tab's drawer and `Maki S:Startup-Sequence` (via _CMDLINE) and an idle tab as no
+program, Open layout brings them back (drawer and program), keys typed during `Wait 3` run after
+it, a bracketed paste lands on the line. Seen once: a quit asked while Maki ran in a tab (and a
+second CTerm open by mistake) left the idle tabs open until `exit` in each - a clean quit with
+idle tabs ends them at once (told the CTerm session). C:csh, C:cshell and their .baks are still
+in C: (not used; the user to decide).
+
 - **One file, `L:csh`**: the Shell build (shellstart.S takes DOS's start-up packet), pure, the e bit
   off. Not a command: nothing searches L:, and `L:csh` typed says "not executable" (run as a
   command it would wait for a packet for ever - it took the test machine down).
