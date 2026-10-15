@@ -218,6 +218,9 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+**cshr INSTALLED on the A1200 2026-10-15** (the user asked): C:cshr, `Resident csh C:cshr` in
+S:User-Startup's CShell block (S:User-Startup.bak-cshr kept) and live; checked with CTerm 0.3b47 there:
+two tabs, use count 2, csh 0.1b10's language; 0 again after quitting.
 **cshr (2026-10-15, the user: CTerm tabs on one shared csh):** the cshell objects linked with
 their own start-up for a command start (`-DCSH_CMDSTART`: no start-up packet), installed as
 `Resident csh C:cshr`: CTerm's `shell=csh` then finds the resident csh, one copy for every tab.
