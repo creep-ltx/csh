@@ -218,6 +218,18 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
+**cshr (2026-10-15, the user: CTerm tabs on one shared csh):** the cshell objects linked with
+their own start-up for a command start (`-DCSH_CMDSTART`: no start-up packet), installed as
+`Resident csh C:cshr`: CTerm's `shell=csh` then finds the resident csh, one copy for every tab.
+Measured (FS-UAE, CTerm 0.3b47): a tab 283 KB with C:csh loaded per tab, 152 KB with cshr
+resident; `Resident` shows its use count going up per tab and down at exit. Telling a Shell start
+from a command start at run time was tried first and is NOT safe: System() Shells arrive with a
+CLI (pr_CLI set), sometimes with cli_Module set too - the Shell took itself for a command and
+the next System() hung or crashed. CTerm starts tab Shells with Execute(), which always runs the
+ROM's BootShell: that is why tabs need `shell=csh` at all. To update cshr: close the tabs (its use
+count must be 0) and `Resident csh C:cshr REPLACE`, or reboot. tests/shelltest.sh's "10 System()
+shells leave no memory" is flaky on the fresh 3.2.1 test machine with the old build too (2 of 3).
+
 **0.1b10 INSTALLED on the A1200 2026-10-15** (the user said yes; C:csh-0.1b9.bak, C:cshell-0.1b9.bak
 kept; REPLACE + useshell; a new window there: functions 57 deep at the prompt, then "too deep").
 **0.1b10 (2026-10-15, the user: "maybe 32 KB is enough?"): stack 32 KB, a cshell window ~123 KB

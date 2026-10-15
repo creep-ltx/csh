@@ -16,7 +16,7 @@ OBJ     = $(patsubst src/%.c,build/%.o,$(SRC))
 SOBJ    = $(patsubst src/%.c,build-shell/%.o,$(SRC))
 SFLAGS  = $(CFLAGS) -resident32 -DCSH_USERSHELL
 
-all: csh cshell useshell
+all: csh cshell cshr useshell
 
 cshell: build-shell/shellstart.o $(SOBJ)
 	$(CC) -noixemul -resident32 -m68020 -nostartfiles -s build-shell/shellstart.o $(SOBJ) $(SLIBS) -o $@
@@ -25,12 +25,24 @@ build-shell/shellstart.o: src/shellstart.S
 	@mkdir -p build-shell
 	$(CC) -m68020 -c $< -o $@
 
-# # useshell: after "Resident shell C:cshell REPLACE" with cshell already the
+# cshr: the same code started as a command, for "Resident csh C:cshr": one
+# copy in memory for every csh started from a Shell (CTerm's shell=csh
+# tabs). Its own start-up (no start-up packet): telling a Shell start from
+# a command start at run time was tried and is not safe (System() Shells
+# come with a CLI, cli_Module set too).
+cshr: build-shell/cmdstart.o $(SOBJ)
+	$(CC) -noixemul -resident32 -m68020 -nostartfiles -s build-shell/cmdstart.o $(SOBJ) $(SLIBS) -o $@
+
+build-shell/cmdstart.o: src/shellstart.S
+	@mkdir -p build-shell
+	$(CC) -m68020 -DCSH_CMDSTART -c $< -o $@
+
+# useshell: after "Resident shell C:cshell REPLACE" with cshell already the
 # Shell, makes the new code the one new Shells run (tools/useshell.c)
 useshell: tools/useshell.c
 	$(CC) -Os -noixemul -s tools/useshell.c -o $@
 
-cshell-ext.rom: cshell as a ROM module, for the emulator (tests/romuae.sh)
+# cshell-ext.rom: cshell as a ROM module, for the emulator (tests/romuae.sh)
 cshell-ext.rom: cshell build-shell/rominit.bin tools/mkextrom.py
 	python3 tools/mkextrom.py cshell build-shell/rominit.bin $@
 
@@ -55,6 +67,6 @@ test:
 	tests/run.sh
 
 clean:
-	rm -rf build build-shell csh cshell useshell
+	rm -rf build build-shell csh cshell cshr useshell
 
 .PHONY: all test clean
