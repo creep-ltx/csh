@@ -30,7 +30,7 @@
 #define DBG(x)
 #endif
 
-#ifdef CSH_USERSHELL
+#if defined(CSH_USERSHELL) && !defined(CSH_CMDSTART)
 static const char version[] = "$VER: cshell " CSH_VERSION " (" CSH_DATE ")";
 #else
 static const char version[] = "$VER: csh " CSH_VERSION " (" CSH_DATE ")";

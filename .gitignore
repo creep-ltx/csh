@@ -16,5 +16,4 @@ tests/probe/findres
 tests/probe/peek
 tests/probe/segs
 tests/probe/phead
-/cshr
 /useshell

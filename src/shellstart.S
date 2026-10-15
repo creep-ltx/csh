@@ -11,7 +11,7 @@
 |  - No Workbench path, no command line (a shell has none).
 |  - __keepdata set: the data stays allocated at the end (jobs csh leaves
 |    running use it).
-|  - Built with -DCSH_CMDSTART (cshr, "Resident csh C:cshr"): started as a
+|  - Built with -DCSH_CMDSTART (csh, "Resident csh C:csh"): started as a
 |    command, so no start-up packet to wait for and no BootShell check;
 |    __shellpkt stays 0 and main.c runs as plain csh, the code shared.
 |
@@ -80,7 +80,7 @@ ours:		movem.l	(sp)+,d0/a0
 		movel	4:W,a6
 		movel	a6@(ThisTask:W),a3
 
-		subl	a2,a2			| no packet (cshr: a command)
+		subl	a2,a2			| no packet (csh: a command)
 #ifndef CSH_CMDSTART
 | the start-up packet: before anything else touches the port
 		lea	a3@(pr_MsgPort:L),a0

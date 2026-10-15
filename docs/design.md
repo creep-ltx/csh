@@ -218,20 +218,23 @@ run apart.
 | the ROM Shell + C:csh (what a CTerm tab with `shell=csh` is) | ~296 000 |
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
-**cshr INSTALLED on the A1200 2026-10-15** (the user asked): C:cshr, `Resident csh C:cshr` in
-S:User-Startup's CShell block (S:User-Startup.bak-cshr kept) and live; checked with CTerm 0.3b47 there:
-two tabs, use count 2, csh 0.1b10's language; 0 again after quitting.
-**cshr (2026-10-15, the user: CTerm tabs on one shared csh):** the cshell objects linked with
-their own start-up for a command start (`-DCSH_CMDSTART`: no start-up packet), installed as
-`Resident csh C:cshr`: CTerm's `shell=csh` then finds the resident csh, one copy for every tab.
-Measured (FS-UAE, CTerm 0.3b47): a tab 283 KB with C:csh loaded per tab, 152 KB with cshr
-resident; `Resident` shows its use count going up per tab and down at exit. Telling a Shell start
-from a command start at run time was tried first and is NOT safe: System() Shells arrive with a
-CLI (pr_CLI set), sometimes with cli_Module set too - the Shell took itself for a command and
-the next System() hung or crashed. CTerm starts tab Shells with Execute(), which always runs the
-ROM's BootShell: that is why tabs need `shell=csh` at all. To update cshr: close the tabs (its use
-count must be 0) and `Resident csh C:cshr REPLACE`, or reboot. tests/shelltest.sh's "10 System()
-shells leave no memory" is flaky on the fresh 3.2.1 test machine with the old build too (2 of 3).
+**csh and cshell: two files, one code (2026-10-15; the user: "can't it be one?")**
+- `C:cshell` - the system Shell (`Resident shell C:cshell REPLACE`, then `useshell` when cshell was
+  already the Shell): its start-up (shellstart.S) takes DOS's start-up packet first.
+- `C:csh` - the same objects started as a command (shellstart.S built with `-DCSH_CMDSTART`: no
+  packet; main.c compiled again for "$VER: csh"). Pure since 2026-10-15 (was a plain program):
+  `Resident csh C:csh` (S:User-Startup's CShell block) makes one copy serve every `csh` - CTerm's
+  `shell=csh` tabs. Measured (FS-UAE, CTerm 0.3b47): a tab 283 KB with csh loaded per tab, ~153 KB
+  resident; `Resident` shows its use count per tab, 0 after exit. Background jobs of csh's own
+  (`f &`) run C:csh as before (os_self). To update C:csh while it is resident: close the tabs (use
+  count 0), `Resident csh C:csh REPLACE`, or reboot.
+- **Why not one file**: a start cannot be told apart at run time. Tried: pr_CLI set (a command has a
+  CLI; but System() Shells on 3.2 arrive with one), then cli_Module set too (System() Shells
+  sometimes have that as well): the Shell skipped its packet and the next System() hung or crashed
+  the test machine. CTerm starts tab Shells with Execute(), which always runs the ROM's BootShell:
+  that is why tabs need `shell=csh` at all.
+- tests/shelltest.sh's "10 System() shells leave no memory" is flaky on the fresh 3.2.1 test
+  machine with the older build too (2 of 3).
 
 **0.1b10 INSTALLED on the A1200 2026-10-15** (the user said yes; C:csh-0.1b9.bak, C:cshell-0.1b9.bak
 kept; REPLACE + useshell; a new window there: functions 57 deep at the prompt, then "too deep").

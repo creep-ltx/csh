@@ -39,7 +39,7 @@ own (csh's own commands too). `ls` is CUtils' (coloured by kind from `ENVARC:Fil
 with the terminal family). Faster than the ROM Shell in every measured case.
 Start with [docs/design.md](docs/design.md), "Start here".
 
-    make            builds csh and cshell (bebbo's gcc in ~/opt/amiga)
+    make            builds csh, cshell and useshell (bebbo's gcc in ~/opt/amiga)
     make test       the line rules and the language, checked on the PC
     tests/pairs.sh  ROM Shell and csh side by side in FS-UAE (W=probe/a: the A1200)
     tests/langtest.sh, tests/bench.sh   the language on the real ROM; the speed
