@@ -24,16 +24,16 @@ and at the top of `S:User-Startup`:
 
     ;BEGIN CShell
     If EXISTS L:csh
-       Resident shell L:csh REPLACE
-       useshell >NIL:
+       useshell L:csh
     EndIf
     ;END CShell
 
 After the next boot every new Shell is csh. **Why `L:` and not executable:** csh is the
 system's Shell (as Workbench 1.3's was, `L:Shell-Seg`), not a command; started as a command
 it would wait for ever, so nothing should find it: `L:` is not searched, and without the `e`
-bit even `L:csh` typed says "file is not executable". **Updating** without a reboot: the same
-two lines (`Resident ... REPLACE`, `useshell`); Shells already open keep the old code.
+bit even `L:csh` typed says "file is not executable". **Updating** without a reboot: copy the
+new `L:csh`, then `useshell L:csh`; Shells already open keep the old code (in memory until a
+reboot). Not `Resident shell ... REPLACE`: run twice it frees the code the running Shells use.
 **Back to the ROM Shell:** take the block out, reboot. CTerm needs no `shell=` line (its tabs
 are csh by themselves). How it works: docs/design.md, "One csh".
 
@@ -46,8 +46,8 @@ in `ENVARC:CShell/csh.keys`, `PROMPT`/`RPROMPT` with zsh's `%` escapes); the bas
 at the prompt and in `#!csh` scripts: arrays, `[[ ]]`, `(( ))`, `trap`, `getopts`, `select`,
 subshells that keep their changes to themselves, `*` matching files. Pipes, `&` and jobs of its
 own (csh's own commands too). `ls` is CUtils' (coloured by kind from `ENVARC:FileColours`, shared
-with the terminal family). Faster than the ROM Shell in most measured cases (tests/bench.sh);
-a script of many built-in commands run with `Execute` is about 13% slower (being worked on).
+with the terminal family). Faster than the ROM Shell in every measured case (tests/bench.sh):
+it reads Amiga scripts itself (the ROM's `Execute` only for `.KEY` scripts and arguments).
 Start with [docs/design.md](docs/design.md), "Start here".
 
     make            builds csh and useshell (bebbo's gcc in ~/opt/amiga)

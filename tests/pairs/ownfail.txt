@@ -1,0 +1,3 @@
+Echo "outer start"
+Execute RAM:infail.scr
+Echo "outer after infail - never"

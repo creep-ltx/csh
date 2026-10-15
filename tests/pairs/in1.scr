@@ -1,0 +1,6 @@
+; inner script one: run by name (s bit) and with Execute
+Echo "in1 start"
+
+FailAt 21
+Execute RAM:in2.scr
+Echo "in1 end"

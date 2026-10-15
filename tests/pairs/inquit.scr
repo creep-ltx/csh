@@ -1,0 +1,3 @@
+Echo "inquit before"
+Quit 7
+Echo "inquit after - never"

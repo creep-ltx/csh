@@ -1,0 +1,24 @@
+; csh reads these scripts itself (no .KEY, no arguments): nesting as the ROM's Execute
+Echo "outer start"
+RAM:in1.scr
+Echo "after in1 by name: FailAt carried, rc 10 goes on"
+RAM:rcx 10
+Execute RAM:in1.scr
+Execute RAM:inner.key keyword
+Echo "after a .KEY inner (the ROM's Execute)"
+Execute RAM:in2.scr
+Set echo on
+; a comment, not echoed
+Echo "echoed line"
+
+Set echo off
+Lab again
+If NOT EXISTS RAM:loopflag
+  Echo >RAM:loopflag x
+  Echo "first pass"
+  Skip again BACK
+EndIf
+Echo "second pass"
+Delete RAM:loopflag QUIET
+Execute RAM:inquit.scr
+Echo "outer after inquit - never"

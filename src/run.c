@@ -334,9 +334,106 @@ int run_capture(const char *cmd, char *buf, int size)
     return n;
 }
 
-/* Ends the script being read (EOF, FailAt, Ctrl-D): back to the console.
- * The T: copy that Execute made is deleted, as the ROM Shell does. */
-void script_end(void)
+/* ---- Amiga scripts read by csh itself ----
+ * The ROM's Execute copies a script to T: (comment lines out), puts the rest
+ * of the current input after it and points cli_CurrentInput at the copy.
+ * Commands then start ~1.2 ms slower each (DOS's RunCommand, under that
+ * copy; cause not found, docs/design.md "One csh"). So csh opens a script
+ * itself: a stack of the scripts being read, each with the input it came
+ * from - that input goes on when the script ends, as the rest after the
+ * ROM's copy would. The ROM's Execute stays for what csh does not do: an
+ * argument (.KEY), a line starting with a dot (.KEY .BRA .DEF...), a
+ * redirection. One run inside a script of csh's takes that script's rest
+ * and closes its handle (seen): marked romowns, not closed again. */
+#define MAXOWN 16
+static struct { BPTR fh, prev; int romowns; } own[MAXOWN];
+static int nown;
+
+/* the script opened, nothing in it that needs the ROM's Execute; 0: not here */
+static BPTR ownopen(const char *path)
+{
+    static char buf[1024];
+    APTR win = csh.me->pr_WindowPtr;
+    BPTR fh;
+    LONG n, i;
+    int start = 1;
+    csh.me->pr_WindowPtr = (APTR)-1;
+    fh = Open((STRPTR)path, MODE_OLDFILE);
+    csh.me->pr_WindowPtr = win;
+    if (!fh) return 0;
+    while ((n = Read(fh, buf, sizeof buf)) > 0)
+        for (i = 0; i < n; i++) {
+            char ch = buf[i];
+            if (ch == '\n') { start = 1; continue; }
+            if (start && (ch == ' ' || ch == '\t')) continue;
+            if (start && ch == '.') { Close(fh); return 0; }     /* .KEY and the rest: the ROM's */
+            start = 0;
+        }
+    if (n < 0 || Seek(fh, 0, OFFSET_BEGINNING) < 0) { Close(fh); return 0; }
+    return fh;
+}
+
+/* Execute PATH [args] as csh's: 0 = set up (its lines are read next), -1 = the ROM's Execute */
+static int ownexec(const char *path, const char *rest, struct cmdline *c)
+{
+    BPTR fh;
+    while (*rest == ' ' || *rest == '\t') rest++;
+    if (*rest && *rest != '\n') return -1;                 /* arguments: .KEY is the ROM's */
+    if (nown == MAXOWN || (c && (c->in[0] || c->out[0] || c->err[0]))) return -1;
+    if (!(fh = ownopen(path))) return -1;
+    own[nown].fh = fh;
+    own[nown].prev = csh.cli->cli_CurrentInput;
+    own[nown].romowns = 0;
+    nown++;
+    csh.cli->cli_CurrentInput = fh;
+    set_rc(0, 0);
+    return 0;
+}
+
+/* The ROM's Execute is about to run: if one of csh's scripts is being read,
+ * the ROM takes its rest and closes it */
+static void romexec(void)
+{
+    if (nown && csh.cli->cli_CurrentInput == own[nown - 1].fh) own[nown - 1].romowns = 1;
+}
+
+/* csh ends: csh's own script handles closed (the ROM's taken ones are not ours) */
+void script_closeown(void)
+{
+    while (nown) {
+        nown--;
+        if (!own[nown].romowns && csh.cli->cli_CurrentInput == own[nown].fh) csh.cli->cli_CurrentInput = own[nown].prev;
+        if (!own[nown].romowns) Close(own[nown].fh);
+    }
+}
+
+/* Ends the script being read: at its end or Quit (all 0) the input it came
+ * from goes on; on FailAt or Ctrl-D (all 1) the whole of it ends, back to
+ * the console. (Quit ends only the script it is in, as the ROM's.) The T:
+ * copy that the ROM's Execute made is deleted, as the ROM Shell does.
+ * FailAt back to 10 once back at the console. */
+static void romcopy_end(void);
+void script_end(int all)
+{
+    struct CommandLineInterface *cli = csh.cli;
+    while (nown) {
+        int top = nown - 1;
+        if (cli->cli_CurrentInput == own[top].fh && !own[top].romowns) Close(own[top].fh);
+        else if (cli->cli_CurrentInput != own[top].prev) romcopy_end();    /* the ROM's copy (it took our rest) */
+        cli->cli_CurrentInput = own[top].prev;
+        nown--;
+        if (!all) {
+            if (cli->cli_CurrentInput == cli->cli_StandardInput) cli->cli_FailLevel = 10;
+            return;
+        }
+    }
+    romcopy_end();
+    cli->cli_FailLevel = 10;
+}
+
+/* the input that is not the console closed (the ROM's copy, a System() line),
+ * the ROM's T: copy deleted */
+static void romcopy_end(void)
 {
     struct CommandLineInterface *cli = csh.cli;
     UBYTE *cf = BADDR(cli->cli_CommandFile);
@@ -353,11 +450,18 @@ void script_end(void)
             cf[0] = 0;
         }
     }
-    cli->cli_FailLevel = 10;
 }
 
 static int builtin(struct cmdline *c)
 {
+    if (!stricmp(c->cmd, "Quit") && nown && csh.cli->cli_CurrentInput == own[nown - 1].fh) {
+        /* in a script csh reads: that script ends, the one that ran it goes on (as the ROM's) */
+        LONG n = 0;
+        if (StrToLong(c->args, &n) < 0) n = 0;
+        set_rc(n, 0);
+        script_end(0);
+        return 1;
+    }
     if (!stricmp(c->cmd, "csh")) {      /* csh FROM / COMMAND by the Amiga's rules: csh itself, no new process */
         static const char tpl[] = "FROM,ARGS/M,COMMAND=-C/K";
         LONG a[3] = { 0, 0, 0 };
@@ -533,6 +637,24 @@ void run_release(struct prepared *p, int detached)
 
 /* Runs one command already split up (the ROM's rules or csh's language):
  * the search, then RunCommand. Returns the rc (also in $RC). */
+/* Execute PATH typed (a line, the csh language, csh FROM): csh reads it
+ * when it can (ownexec); 1 = done */
+static int execline(struct cmdline *c)
+{
+    char path[256];
+    const char *a = c->args;
+    int n = 0;
+    while (*a == ' ' || *a == '\t') a++;
+    if (*a == '"') {
+        for (a++; *a && *a != '"' && *a != '\n' && n < 255; a++) path[n++] = *a == '*' && a[1] ? *++a : *a;
+        if (*a != '"') return 0;
+        a++;
+    } else while (*a && *a != ' ' && *a != '\t' && *a != '\n' && n < 255) path[n++] = *a++;
+    path[n] = 0;
+    if (!n || n == 255) return 0;
+    return !ownexec(path, a, c);
+}
+
 LONG run_cmd(struct cmdline *c, int depth)
 {
     struct Segment *seg = NULL;
@@ -542,6 +664,10 @@ LONG run_cmd(struct cmdline *c, int depth)
     LONG rc = 0;
 
     if (!fib && !(fib = AllocDosObject(DOS_FIB, NULL))) return 20;
+    if (!stricmp(c->cmd, "Execute")) {
+        if (execline(c)) return 0;
+        romexec();                      /* the ROM's Execute: it may take our script's rest */
+    }
     alone = c->args[0] == '\n' && !c->in[0] && !c->out[0];
     f = find(c->cmd, alone, &seg, &lock, fib, &where, &lname);
     if (f == F_RES) {
@@ -571,8 +697,9 @@ LONG run_cmd(struct cmdline *c, int depth)
                     run_line(cmd, depth + 1);
                     rc = csh.rc;
                 }
-            } else if (!quoted(cmd, sizeof cmd, path, c->args)) rc = 10;
-            else rc = run_internal("Execute", cmd, c);
+            } else if (!ownexec(path, c->args, c)) rc = 0;         /* csh reads it */
+            else if (!quoted(cmd, sizeof cmd, path, c->args)) rc = 10;
+            else { romexec(); rc = run_internal("Execute", cmd, c); }
             run_cmdline_end();
         } else {
             /* e cleared, or not a program: "file is not executable" as the ROM says */
@@ -695,7 +822,7 @@ void run_line(const char *line, int depth)
     /* a script ends when a command fails at or over FailAt */
     if (!interactive && rc >= csh.cli->cli_FailLevel && !csh.quit) {
         Printf("%s failed returncode %ld\n", name, (long)rc);
-        script_end();
+        script_end(1);
         if (csh.fromfile) csh.quit = 1;
     }
 }

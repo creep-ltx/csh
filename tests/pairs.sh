@@ -7,8 +7,9 @@ cd "$(dirname "$0")"; W=${W:-probe/w}; P=pairs
 [ -f probe/whoshell ] || ~/opt/amiga/bin/m68k-amigaos-gcc -Os -noixemul -s -o probe/whoshell probe/whoshell.c || exit 2
 $W put probe/whoshell RAM:whoshell >/dev/null
 $W run --max-time 10 RAM:whoshell | grep -q 'seg4 ROM' || { echo "pairs.sh: csh is already the Shell here - a fresh test machine (amiga-test ... --fresh)" >&2; exit 2; }
-for f in probe/rcx probe/pcat probe/perr $P/inner.key probe/s/sbit probe/s/ebit probe/s/rexx pairs/noe; do $W put $f RAM:$(basename $f) >/dev/null; done
+for f in probe/rcx probe/pcat probe/perr $P/inner.key probe/s/sbit probe/s/ebit probe/s/rexx pairs/noe $P/*.scr; do $W put $f RAM:$(basename $f) >/dev/null; done
 $W run --max-time 5 "Protect RAM:sbit +s" >/dev/null; $W run --max-time 5 "Protect RAM:rexx +s" >/dev/null
+for f in $P/*.scr; do $W run --max-time 5 "Protect RAM:$(basename $f) +s" >/dev/null; done
 names=("$@"); [ ${#names[@]} = 0 ] && names=($(cd $P && ls *.txt | sed 's/\.txt$//'))
 bad=0
 clean() { $W run --max-time 5 "Delete RAM:x10 RAM:r1 RAM:r2 RAM:r3 RAM:r4 RAM:r5 RAM:e1 RAM:e2 RAM:e3o RAM:e3e RAM:p1 QUIET" >/dev/null 2>&1; }

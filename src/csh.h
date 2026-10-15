@@ -73,7 +73,8 @@ LONG lang_runscript(const char *path, struct cmdline *c);
 int lang_line(const char *line, int interactive); /* a line typed at the prompt */
 extern int lang_more;                             /* lang_line wants another line */
 int run_capture(const char *cmd, char *buf, int size);
-void script_end(void);
+void script_end(int all);       /* run.c: the script ends (all: the whole chain, FailAt/Ctrl-D) */
+void script_closeown(void);     /* csh ends: its own script handles closed */
 LONG script_now(BPTR until);    /* main.c: an Execute's lines run now (from the csh language) */
 void set_rc(LONG rc, LONG r2);
 int ltoa10(LONG n, char *b);

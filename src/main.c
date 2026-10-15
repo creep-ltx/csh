@@ -411,15 +411,20 @@ static int script_step(char *line, int size)
     int g;
     if (SetSignal(0, SIGBREAKF_CTRL_D) & SIGBREAKF_CTRL_D) {
         Printf("***Break\n");
-        script_end();
+        script_end(1);
         return 1;
     }
     if (!(g = getline_(cli->cli_CurrentInput, line, size))) {
         DBG(("cshell: end of input %lx (std %lx)\n", cli->cli_CurrentInput, cli->cli_StandardInput));
-        if (cli->cli_CurrentInput != cli->cli_StandardInput) { script_end(); return 1; }
+        if (cli->cli_CurrentInput != cli->cli_StandardInput) { script_end(0); return 1; }
         return 0;                                          /* Ctrl-\ on the console */
     }
     if (g < 0) return 1;
+    {   /* a comment or blank line: nothing to do (the ROM's Execute leaves them out of its copy) */
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '\n' || *p == '\r' || *p == ';') return 1;
+    }
     DBG(("cshell: line [%s] cur %lx std %lx\n", line, cli->cli_CurrentInput, cli->cli_StandardInput));
     {   /* FindVar: the local list only, no copy, no ENV: file opened */
         struct LocalVar *e = FindVar("echo", LV_VAR);
@@ -625,6 +630,7 @@ shell:
     DBG(("cshell: loop ends\n"));
     lang_exittrap();
     os_flush();
+    script_closeown();              /* scripts csh was reading when it ended (EndCLI in one) */
 
     job_leave();
     if (!csh.module) cli->cli_Module = 0;   /* jobs still run csh's code: it stays in memory */
@@ -637,7 +643,7 @@ shell:
     run_end();
     comp_end();
     if (!csh.usershell && !(cli->cli_Background && !csh.bg0)) {
-        if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end();
+        if (csh.fromfile && cli->cli_CurrentInput != cli->cli_StandardInput) script_end(1);
         cli->cli_CurrentInput = oldcur;
         cli->cli_Interactive = oldinter;
         if (csh.fromfile) cli->cli_FailLevel = oldfail;   /* script_end set 10: the calling script's own back */

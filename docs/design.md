@@ -223,8 +223,12 @@ run apart.
 - **One file, `L:csh`**: the Shell build (shellstart.S takes DOS's start-up packet), pure, the e bit
   off. Not a command: nothing searches L:, and `L:csh` typed says "not executable" (run as a
   command it would wait for a packet for ever - it took the test machine down).
-- **S:User-Startup**, first: `Resident shell L:csh REPLACE` and `useshell` (tools/useshell.c: the
-  system "shell" entry and Execute()'s BootShell entry both get that code). The boot Shell itself
+- **S:User-Startup**, first: `useshell L:csh` (tools/useshell.c: loads it, checks "$VER: csh",
+  points the system "shell" entry and Execute()'s BootShell entry at it, never frees code).
+  **Not `Resident shell L:csh REPLACE`**: once the plain "shell" entry REPLACE made is the live
+  code (useshell copied it), the next REPLACE frees it - every running Shell went on in freed
+  memory and the test machine went down after the second install (2026-10-15). The A1200 had
+  that risk with 0.1b9/0.1b10's updates (REPLACE + useshell) and got away with it. The boot Shell itself
   stays the ROM's (it runs the Startup-Sequence, and only it puts the internal commands into the
   resident list). Every Shell after: NewShell, the Shell icon, Run, System() both ways, Execute(),
   CTerm's tabs (no `shell=` line needed). **Verified with a real reboot** (a1200-32-mui5): the
@@ -239,9 +243,20 @@ run apart.
   User-Startup (its lines run in the ROM's boot Shell; `Execute S:User-Startup` is the internal
   command, same process), so the top buys nothing; User-Startup is the user's own file (the top of
   Startup-Sequence is AmigaOS's).
-- Updating: the same two lines; Shells already open keep the old code (in memory till a reboot).
+- Updating: copy L:csh, `useshell L:csh`; Shells already open keep the old code (in memory till a
+  reboot; ~143 KB an update). Tested: 12 installs in a row with Shells running, then all tests.
 - Tests: tests/install.sh (sourced by each test) does what User-Startup does; pairs.sh and
   bench.sh first measure the ROM Shell, so they want a fresh machine (they check: probe/whoshell).
+- **Fixed (0.1b11): csh reads Amiga scripts itself** (run.c ownexec: `Execute FILE` typed, a
+  script run by name, `csh FROM`), a stack of {its handle, the input it came from} - the input
+  goes on at its end, as the ROM's copy (script + the rest of the input) would; FailAt and
+  Ctrl-D end the whole chain, `Quit` only its own script (the ROM's does so: tests/pairs/own.txt
+  showed it). The ROM's Execute stays for an argument, a line starting with a dot (.KEY...) or a
+  redirection; it takes the rest of a script csh reads and closes its handle (seen), so that
+  frame is marked romowns. Comment and blank lines skipped before csh's passes. pairs: 14 of 14
+  the same as the ROM (own.txt, ownfail.txt new: by name and Execute, 3 deep, a .KEY script
+  between, FailAt carried, Skip BACK, Set echo on, Quit and a failure inside). bench: internal
+  0.88 (was 1.13), all <= 1.00; 400 comment lines 0.46 s (were 0.94).
 - **Speed of Execute'd scripts (measured 2026-10-15, an experiment build with E-clock timing,
   not kept).** A script run by the ROM's `Execute` (and a script run by name: csh hands it to
   Execute) costs csh ~1.2 ms more *per command* than the same file read by csh itself: 400
