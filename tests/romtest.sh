@@ -15,7 +15,8 @@ $W put probe/findres RAM:findres >/dev/null; $W put probe/segs RAM:segs >/dev/nu
 check "exec has the cshell module" "$($W run --max-time 10 'RAM:findres cshell' | cut -c1-21)" "cshell at 00F10100: v"
 segs=$($W run --max-time 10 RAM:segs)
 echo "$segs" | grep -q '^shell .*= 00F1' && echo "ok   dos's shell is in the ROM module" || { echo "FAIL shell entry: $segs"; bad=1; }
-echo "$segs" | grep -q '^BootShell .*= 00FCE1A4' && echo "ok   BootShell is the ROM's" || { echo "FAIL BootShell entry: $segs"; bad=1; }
+# in the Kickstart ROM ($F80000-$FFFFFF; 00FCE1A4 on 3.2, 00FCE4F0 on 3.2.1)
+echo "$segs" | grep -q '^BootShell .*= 00F[89A-F]' && echo "ok   BootShell is the ROM's" || { echo "FAIL BootShell entry: $segs"; bad=1; }
 check "System() lines by the Amiga rules" "$($W run --max-time 10 'Echo "via cshell" ; a comment' 2>&1)" 'via cshell'
 $W run --max-time 10 'Fail' >/dev/null 2>&1; check "System() rc" "$?" "10"
 avail() { $W run --max-time 20 'Avail FLUSH TOTAL' 2>&1 | tail -1; }
