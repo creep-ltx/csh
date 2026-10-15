@@ -93,8 +93,8 @@ saved layout can start the program again with its arguments.
 - completion: a keyword's value (`TO`, `LFORMAT`), menu selection; `**/` (globstar), extglob.
 - `exec`, `command`, `printf %q`, `${x@Q}`, `case ;&`, `read -n/-t/-s`, `declare -i`.
 - no git: `$(...)` in PROMPT is the way to show anything else.
-- `ls` calls every file with no ending and the e bit a program; Ahiru and Maki do not read
-  ENVARC:FileColours yet.
+- `ls` calls every file with no ending and the e bit a program; Maki does not read
+  ENVARC:FileColours yet (Ahiru does since 0.3b3, 2026-10-15).
 - Untested on the user's own scripts and daily use: ask what the user ran into.
 
 1. Read this file, then `Knowledge/amiga/writing-a-shell.md`. **The 2026-10-13 audit
@@ -158,7 +158,7 @@ saved layout can start the program again with its arguments.
    functions, `S:CShell-Startup` (run once at the first prompt, the csh language), Tab
    completes a command's own keywords (read from its file: the longest run of ReadArgs parts,
    a few stray bytes before it allowed; the ROM's internal commands from a table).
-   **Next:** Ahiru and Maki reading `ENVARC:FileColours`;
+   **Next:** Maki reading `ENVARC:FileColours` (Ahiru does, 0.3b3);
    loading parts on demand (csh is 80 KB; the language could be a part); what the user finds.
 7. Build like Sumi and Maki: bebbo's gcc in `~/opt/amiga`, `-fbbb=-`.
 
