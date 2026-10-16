@@ -220,7 +220,7 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
-**0.1b12 (2026-10-16, built and tested, not on the A1200):** (1) Amiga lines: only the first
+**0.1b12 (2026-10-16) INSTALLED on the A1200 the same day (L:csh, `useshell L:csh`; L:csh-0.1b11.bak kept; the user said yes):** (1) Amiga lines: only the first
 redirection of each kind counts, a later one is an argument (3.2.1: `Echo a >RAM:r1 b >RAM:r2 c`
 wrote "a b >RAM:r2 c" to r1) - `Run >NIL: cmd >file` had given the second to Run (the CUtils
 session's top test; tests/pairs/redir2.txt). (2) EndCLI in a script csh reads: the ROM's EndCLI
