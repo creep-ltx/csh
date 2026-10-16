@@ -113,6 +113,11 @@ int main(void)
     parse("Echo >RAM:r1 before", "Echo|before||RAM:r1||");
     parse("Echo end >RAM:r2", "Echo|end||RAM:r2||");
     parse("Echo mid >RAM:r3 dle", "Echo|mid dle||RAM:r3||");
+    /* only the first of each kind (3.2.1: Echo a >RAM:r1 b >RAM:r2 c wrote "a b >RAM:r2 c") */
+    parse("Echo a >RAM:r1 b >RAM:r2 c", "Echo|a b >RAM:r2 c||RAM:r1||");
+    parse("Echo x <NIL: y <NIL: z >RAM:r3", "Echo|x y <NIL: z|NIL:|RAM:r3||");
+    parse("Run >NIL: RAM:top -b -n 1 >RAM:topo2", "Run|RAM:top -b -n 1 >RAM:topo2||NIL:||");
+    parse("Echo q *>RAM:e1 w *>RAM:e2 >RAM:r5", "Echo|q w *>RAM:e2||RAM:r5|RAM:e1|");
     parse("Echo x > RAM:sp", "Echo|x||RAM:sp||");
     parse("Echo x >>RAM:ap", "Echo|x||RAM:ap||a");
     parse("Type <RAM:in", "Type||RAM:in|||");

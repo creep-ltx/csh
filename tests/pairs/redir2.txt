@@ -1,0 +1,16 @@
+; only the first redirection of each kind counts; a later one is an argument
+Echo a >RAM:q1 b >RAM:q2 c
+Type RAM:q1
+If EXISTS RAM:q2
+  Echo "q2 made"
+Else
+  Echo "no q2"
+EndIf
+Echo x <NIL: y <NIL: z >RAM:q3
+Type RAM:q3
+Echo q *>RAM:q4 w *>RAM:q5 >RAM:q6
+Type RAM:q6
+Run >NIL: Echo ran >RAM:q7
+Wait 2
+Type RAM:q7
+Delete RAM:q1 RAM:q3 RAM:q4 RAM:q6 RAM:q7 QUIET

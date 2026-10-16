@@ -10,7 +10,10 @@
  *  - ";" outside quotes starts a comment; in quotes * escapes the next
  *    character, so *" does not end the quote;
  *  - >file >>file <file <>file *>file *>>file anywhere in the line, the
- *    name joined or after a space; a "|" word on its own is a pipe;
+ *    name joined or after a space - the first of each kind only: a later
+ *    one is an argument like any word ("Run >NIL: cmd >file" gives the
+ *    second to Run's Shell; Echo a >r1 b >r2 c writes "a b >r2 c" to r1);
+ *    a "|" word on its own is a pipe;
  *  - a line joined with "+" holds LFs: the text after the first one goes
  *    to the command as the start of its input.
  * No Amiga calls in here: tests/line_test.c runs it on the PC. */
@@ -174,7 +177,7 @@ static int unquote(char *dst, int size, const char *s, int n)
 int line_parse(const char *line, struct cmdline *c)
 {
     const char *p = line, *gap = line;
-    int o = 0, havecmd = 0;
+    int o = 0, havecmd = 0, gotin = 0, gotout = 0, goterr = 0;
     memset(c, 0, sizeof *c);
     for (;;) {
         const char *w, *e, *f;
@@ -183,14 +186,17 @@ int line_parse(const char *line, struct cmdline *c)
         while (isspc(*p)) p++;
         if (!*p || *p == '\n' || *p == ';') break;
         w = p; e = wordend(p);
-        if (*w == '>' || *w == '<' || (*w == '*' && w[1] == '>')) {
+        /* the first redirection of a kind only (the ROM's rule, seen on 3.2.1) */
+        if ((*w == '>' && !gotout) || (*w == '<' && w[1] == '>' && !gotin) ||
+            (*w == '<' && w[1] != '>' && !gotin) || (*w == '*' && w[1] == '>' && !goterr)) {
             int inout = 0;
             f = w;
-            if (*f == '*') { f += 2; dst = c->err; if (*f == '>') { f++; c->err_append = 1; } }
+            if (*f == '*') { f += 2; dst = c->err; goterr = 1; if (*f == '>') { f++; c->err_append = 1; } }
             else if (*f == '<') {
                 f++; dst = c->in;
-                if (*f == '>') { f++; inout = 1; }
-            } else { f++; dst = c->out; if (*f == '>') { f++; c->out_append = 1; } }
+                if (*f == '>') { f++; inout = 1; }      /* <> (a console only): a later < or > still counts */
+                else gotin = 1;
+            } else { f++; dst = c->out; gotout = 1; if (*f == '>') { f++; c->out_append = 1; } }
             /* a later < or > of its own ends <>'s one file for both */
             if (dst != c->err) c->inout = inout;
             if (f >= e) {                    /* "> file": the name is the next word */
