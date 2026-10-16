@@ -6,7 +6,8 @@
 # the same time without the ROM: this stops it first, and stop stops it.
 # SERIAL=FILE: the emulated serial port to a file (KPrintF from the boot).
 D=$(cd "$(dirname "$0")/.." && pwd)
-C=~/Projects/CTerm/tests/files/uae.sh
+CTERM_DIR=${CTERM_DIR:-$D/../CTerm}   # the CTerm repo, default next to this one
+C=$CTERM_DIR/tests/files/uae.sh
 EXT=${2:-$D/cshell-ext.rom}
 export WASABI_HOST=127.0.0.1 WASABI_PORT=1240
 case "$1" in

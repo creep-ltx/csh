@@ -1,17 +1,17 @@
 # CShell (csh): a modern shell for the Amiga
 
 *Design written 2026-10-12 with the user; steps 1-7 built 2026-10-13 (csh 0.1b1, ls 0.1, CTerm 0.3b32's shell setting). Everything here is proposed unless it
-says decided. The facts behind it are in `~/Projects/Knowledge/amiga/writing-a-shell.md` (from the
+says decided. The facts behind it are in the knowledge base (`amiga/writing-a-shell.md`) (from the
 AmigaDOS manual, the Amiga Guru Book's shell chapter and the verified notes); a line there marked
 read or memory is not yet proven on the 3.2 ROM.*
 
 ## Start here (a later session)
 
 **Parallel sessions (set up 2026-10-15, the user's wish):** CTerm, csh and CUtils may each have a
-session running at the same time. Stay in your own repo: CTerm's session owns `~/Projects/CTerm`,
-csh's owns `~/Projects/CShell`, CUtils' owns `~/Projects/CUtils`; a change another one needs is a
+session running at the same time. Stay in your own repo: CTerm's session owns the CTerm repo,
+csh's owns the CShell repo, CUtils' owns the CUtils repo; a change another one needs is a
 note in its design.md or a message, never an edit there. Shared things:
-- **FS-UAE on port 1240** (`~/Projects/CTerm/tests/files/uae.sh`) is used by all three: work in
+- **FS-UAE on port 1240** (`../CTerm/tests/files/uae.sh`) is used by all three: work in
   your own RAM: drawer (CUtils: `S=x tests/run.sh`), never `uae.sh stop`/restart it without
   asking the others (`ListAgents`, then a message); a crash there - tell the others before restarting.
 - **The A1200** (Wasabi): message the others before installing, rebooting or restarting wasabid;
@@ -474,7 +474,7 @@ it keeps running commands for other programs.
 
 ## Decided with the user (2026-10-12)
 
-- **Name** CShell, command **`csh`** ("this is Amiga, not Unix"). Code in `~/Projects/CShell`.
+- **Name** CShell, command **`csh`** ("this is Amiga, not Unix"). Code in the CShell repo.
 - **`#!csh`** on a script's first line marks a csh script; without it a script is an Amiga script.
 - **bash's language, the common part of it**: variables, quoting, `$(...)`, pipes and redirection,
   `if` / `for` / `while` / `case`, functions, `&&` / `||`, `$((...))`, wildcards, aliases, jobs,
@@ -637,7 +637,7 @@ From CCON (which already feels like fish/bash/zsh) and CTerm's console:
 
 - csh colours its prompt and the typed line.
 - **Retired 2026-10-15 (the user asked): csh's own `ls` (`tools/ls.c`) is gone**; `ls` is CUtils'
-  (`~/Projects/CUtils`, src/ls.c, its own tests), C:ls 0.3b1 on the A1200 since 2026-10-15, which
+  (the CUtils repo, src/ls.c, its own tests), C:ls 0.3b1 on the A1200 since 2026-10-15, which
   grew from it and reads the same FileColours (lib/cu_colours.c). Below is the history.
 - File lists are coloured by whoever lists. csh's `ls` is **CUtils' `ls`**
   (`AmigaTools/cutils`, already colours drawers and the hidden class grey, colours only on a
