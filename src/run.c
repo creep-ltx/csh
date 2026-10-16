@@ -397,14 +397,29 @@ static void romexec(void)
     if (nown && csh.cli->cli_CurrentInput == own[nown - 1].fh) own[nown - 1].romowns = 1;
 }
 
-/* csh ends: csh's own script handles closed (the ROM's taken ones are not ours) */
+/* csh ends (EndCLI in a script, its input ended): csh's own script handles
+ * closed, and the input under the first of them (a NewShell FROM file, a
+ * System() or Execute() line, a ROM copy) - the ROM's Execute would have
+ * taken that one into its copy and closed it. The innermost of csh's is
+ * closed only if it is still the current input: the ROM's EndCLI closes the
+ * current input itself (a second Close was dos alert #0700000E,
+ * AN_FileReclosed: a CTerm tab started FROM a script ending in EndCLI).
+ * The ones under it were never current: still open. The ROM's taken ones
+ * (romowns) are not csh's to close. */
 void script_closeown(void)
 {
+    struct CommandLineInterface *cli = csh.cli;
+    BPTR under;
+    int top = 1;
+    if (!nown) return;
+    under = own[0].prev;
     while (nown) {
         nown--;
-        if (!own[nown].romowns && csh.cli->cli_CurrentInput == own[nown].fh) csh.cli->cli_CurrentInput = own[nown].prev;
-        if (!own[nown].romowns) Close(own[nown].fh);
+        if (!own[nown].romowns && (cli->cli_CurrentInput == own[nown].fh || !top)) Close(own[nown].fh);
+        top = 0;
     }
+    if (under && under != cli->cli_StandardInput) Close(under);
+    cli->cli_CurrentInput = cli->cli_StandardInput;
 }
 
 /* Ends the script being read: at its end or Quit (all 0) the input it came

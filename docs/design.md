@@ -220,6 +220,18 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
+**0.1b12 (2026-10-16, built and tested, not on the A1200):** (1) Amiga lines: only the first
+redirection of each kind counts, a later one is an argument (3.2.1: `Echo a >RAM:r1 b >RAM:r2 c`
+wrote "a b >RAM:r2 c" to r1) - `Run >NIL: cmd >file` had given the second to Run (the CUtils
+session's top test; tests/pairs/redir2.txt). (2) EndCLI in a script csh reads: the ROM's EndCLI
+closes the current input itself, and script_closeown closed it again - dos alert #0700000E
+(AN_FileReclosed) in CTerm tabs started FROM a script ending in EndCLI (the CUtils session saw it
+three times on the A1200). Now the innermost is closed only if still current, the ones under it
+and the input under them (a NewShell FROM file - it had stayed open, "object in use") are
+closed. Checked in FS-UAE: CTerm FROM such a script, two deep, NewShell FROM: no alert, the
+files deletable. CTerm itself loses ~6 KB a start and quit with the ROM Shell in its tabs too
+(told the CTerm session).
+
 **INSTALLED on the A1200 2026-10-15 (the user said go; rebooted):** L:csh 0.1b11 (p, not e),
 C:useshell (old: C:useshell-0.1b10.bak), S:User-Startup's CShell block = `useshell L:csh`
 (old block: S:User-Startup.bak-0.1b10), `shell=csh` taken out of ENV:/ENVARC:CTerm.prefs
