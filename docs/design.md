@@ -230,7 +230,9 @@ layout keeps a tab's drawer and `Maki S:Startup-Sequence` (via _CMDLINE) and an 
 program, Open layout brings them back (drawer and program), keys typed during `Wait 3` run after
 it, a bracketed paste lands on the line. Seen once: a quit asked while Maki ran in a tab (and a
 second CTerm open by mistake) left the idle tabs open until `exit` in each - a clean quit with
-idle tabs ends them at once (told the CTerm session). C:csh, C:cshell and their .baks deleted at the user's word (2026-10-15); kept:
+idle tabs ends them at once (told the CTerm session). 2026-10-16: the CUtils session's 5-minute stress test on the A1200 (windows opening and
+closing, top started and broken; Echo with *N, Status COM=, Break, Run, NewShell FROM, Avail;
+~600 commands) ran through csh 0.1b11 without a fault. C:csh, C:cshell and their .baks deleted at the user's word (2026-10-15); kept:
 C:csh-0.1b10.bak, C:cshell-0.1b10.bak, C:useshell-0.1b10.bak (what S:User-Startup.bak-0.1b10
 needs, renamed back).
 
