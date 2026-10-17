@@ -59,3 +59,7 @@ In csh: `csh FROM script [args]` runs a script in a subshell (`#!csh` on its fir
 csh language, else an Amiga script), `csh COMMAND "text"` (or `-c`) runs csh text; neither
 starts anything new. Your own aliases and settings go in `S:CShell-Startup` (csh's language),
 run once at the first prompt.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
