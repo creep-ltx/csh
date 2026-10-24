@@ -220,7 +220,7 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
-**0.1b13 (2026-10-24, test Amigas only, NOT on the A1200):** an Amiga command that a `*` would hand more than 127 names gets the pattern instead (as #?), the same fallback as for a line that is too long. ReadArgs takes at most 127 names for a /M argument: 128 fail with "argument line invalid or too long" on 3.1 and on 3.2.1 (tested in FS-UAE, a1200-31 and a1200-32). Before: in a drawer of 200 files `List *` failed and `Delete *` deleted nothing. Test: tests/lang/manynames.csh. (From the AmigaOS 3.1 study in the knowledge base, aos31-study/dos-and-filesystems.md.)
+**0.1b13 (2026-10-24) INSTALLED on the A1200 the same day (L:csh; L:csh-0.1b12.bak kept; rebooted; tests/lang/manynames.csh passes there; the user asked):** an Amiga command that a `*` would hand more than 127 names gets the pattern instead (as #?), the same fallback as for a line that is too long. ReadArgs takes at most 127 names for a /M argument: 128 fail with "argument line invalid or too long" on 3.1 and on 3.2.1 (tested in FS-UAE, a1200-31 and a1200-32). Before: in a drawer of 200 files `List *` failed and `Delete *` deleted nothing. Test: tests/lang/manynames.csh. (From the AmigaOS 3.1 study in the knowledge base, aos31-study/dos-and-filesystems.md.)
 
 **0.1b12 (2026-10-16) INSTALLED on the A1200 the same day (L:csh, `useshell L:csh`; L:csh-0.1b11.bak kept; the user said yes):** (1) Amiga lines: only the first
 redirection of each kind counts, a later one is an argument (3.2.1: `Echo a >RAM:r1 b >RAM:r2 c`
