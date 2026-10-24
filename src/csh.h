@@ -7,8 +7,8 @@
 #include <dos/dosextens.h>
 #include "line.h"
 
-#define CSH_VERSION "0.1b12"
-#define CSH_DATE    "16.10.2026"
+#define CSH_VERSION "0.1b13"
+#define CSH_DATE    "24.10.2026"
 
 #ifndef CMD_INTERNAL
 #define CMD_SYSTEM   -1

@@ -2961,8 +2961,10 @@ static void globall(Exp *e, int from)
 /* An Amiga command's line from the fields. * matches files in csh, as in
  * bash - except for a command whose template takes one name only (Dir,
  * CD: the pattern goes to it, as the Amiga does, unless it matches one
- * file), and when the files make the line too long (the program gets the
- * pattern, as #?, and matches it itself). */
+ * file), and when the files make the line too long or are more than
+ * ReadArgs takes (the program gets the pattern, as #?, and matches it
+ * itself). */
+#define AMIGA_MAXNAMES 127      /* ReadArgs' /M limit: 128 names fail, 3.1 and 3.2.1 (tested) */
 static int amigaline(Arena *ar, Exp *e, struct cmdline *c)
 {
     Str a;
@@ -2977,7 +2979,8 @@ static int amigaline(Arena *ar, Exp *e, struct cmdline *c)
         }
         memset(&a, 0, sizeof a); a.ar = ar;
         for (i = 1; i < g.nf; i++) { if (i > 1) sputc(&a, ' '); amigaarg(&a, &g.f[i]); }
-        if (a.n + 2 < (int)sizeof c->args && g.f[0].len < (int)sizeof c->cmd) {
+        if (a.n + 2 < (int)sizeof c->args && g.f[0].len < (int)sizeof c->cmd &&
+            !(globbed && g.nf - 1 > AMIGA_MAXNAMES)) {
             memcpy(c->cmd, g.f[0].s, g.f[0].len); c->cmd[g.f[0].len] = 0;
             if (a.s) memcpy(c->args, a.s, a.n);
             c->args[a.n] = '\n'; c->args[a.n + 1] = 0;
