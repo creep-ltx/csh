@@ -21,7 +21,7 @@ note in its design.md or a message, never an edit there. Shared things:
   (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
   drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
   (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) ~~the small bash
-  bits~~ done (0.1b9); (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) ~~size~~ done in 0.1b16 as per-window
+  bits~~ done (0.1b9); (5) ~~jobs: `$!`, `disown`, `wait -n` (0.1b9), Ctrl-Z~~ done (0.1b15); (6) ~~size~~ done in 0.1b16 as per-window
   data (the language split would save nothing: see 0.1b16).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
 
