@@ -220,7 +220,7 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
-**0.1b14 (2026-10-25): a big paste no longer loses the middle of a line** (src/term.c
+**0.1b14 (2026-10-25) INSTALLED on the A1200 the same day (L:csh, L:csh-0.1b13.bak kept, useshell; the user asked): a big paste no longer loses the middle of a line** (src/term.c
 term_open). At every prompt csh asks the console for the cursor (CSI 6n) and the window bounds
 and reads until the bounds answer comes - and that answer waits BEHIND everything typed or
 pasted while the last command ran. With ~2 KB of pasted commands waiting, those reads filled
