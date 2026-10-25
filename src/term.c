@@ -421,13 +421,21 @@ int term_open(BPTR in, BPTR out)
                                                  * stay keys for the prompt (CTerm 0.3b33) */
     term_col0 = 1;
     if (answers) {
-        int got = 0;
+        int got = 0, busy = 0;
         term_outs("\x9b" "6n");                /* the cursor, answered with CSI row;col R (first) */
         term_outs("\x9b" "0 q");               /* the window bounds, answered with CSI ... r */
         term_flush();
         asking = 1;
         for (tries = 0; tries < 10 && !got; tries++) {
             int i;
+            /* The answers come behind anything typed or pasted while the
+             * last command ran. Never read more than the key queue holds:
+             * push() drops what does not fit, and a big paste lost the
+             * middle of a line here (CCON paste of 7.9 KB on the A1200,
+             * 2026-10-25). The rest waits in the console; a late answer is
+             * harmless (a CSI R outside asking is no key, the bounds still
+             * set the width). */
+            if (qroom() <= (int)sizeof ibuf) { busy = 1; break; }
             if (!WaitForChar(tin, 100000)) continue;
             {
                 LONG n = Read(tin, ibuf + ilen, sizeof ibuf - ilen);
@@ -437,7 +445,7 @@ int term_open(BPTR in, BPTR out)
             parse(0);
         }
         asking = 0;
-        if (!got) answers = 0;
+        if (!got && !busy) answers = 0;     /* busy: it may still answer, behind the keys */
     }
     if (term_col0 > 1) term_outs("\n");      /* zsh's way: the last line had no line end */
     /* the size report is not a key: drop resize news it caused */
