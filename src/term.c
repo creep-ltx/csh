@@ -375,12 +375,20 @@ int term_pending(void)
     return kh != kt || ilen;
 }
 
+int term_zok = -1;              /* the console knows OSC 7728 (Ctrl-Z for pipes) */
+
 static int iscterm(struct MsgPort *port)
 {
     struct InfoData *id;
     int yes = 0;
+    term_zok = 0;
     if ((id = AllocVec(sizeof *id, MEMF_PUBLIC | MEMF_CLEAR))) {
-        if (DoPkt(port, ACTION_DISK_INFO, MKBADDR(id), 0, 0, 0, 0)) yes = id->id_DiskType == ID_CTRM;
+        if (DoPkt(port, ACTION_DISK_INFO, MKBADDR(id), 0, 0, 0, 0)) {
+            yes = id->id_DiskType == ID_CTRM;
+            /* CTerm drops OSCs it does not know; CCON says so from 1.3.1b3
+             * (1.3.0 retitled the window with any OSC) */
+            term_zok = yes || (id->id_DiskType == 0x43434F4E && id->id_NumSoftErrors == 7728);
+        }
         FreeVec(id);
     }
     return yes;

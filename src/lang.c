@@ -3737,12 +3737,10 @@ static long __attribute__((noinline)) pipeline(Node *n, int bg)
                 os_err("+ ", 2); os_err(c->cmd, strlen(c->cmd)); os_err(" ", 1);
                 os_err(c->args, c->arglen);
             }
-            if (last && !bg && !own[i]) {   /* in csh itself, as the ROM Shell does */
-                r = src[i] = os_lastrun(job, c, in, pre[i]);
-                pre[i] = NULL;
-                lastint = 1;
-                break;
-            }
+            /* 0.1b15: the last Amiga command of a pipe runs in a process of
+             * its own too (csh waits for it), so Ctrl-Z can give the prompt
+             * back while it runs - in csh itself it could not. Amiga
+             * scripts' pipes (run.c) keep the ROM Shell's way. */
             if (last) out = os_job_out(job);
             else if (!os_pipe(job, &next, &out)) { os_close(job, in); r = 20; break; }
             if (!os_spawn(job, c, in, out, pre[i])) r = sh_rc();

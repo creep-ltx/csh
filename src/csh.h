@@ -7,7 +7,8 @@
 #include <dos/dosextens.h>
 #include "line.h"
 
-#define CSH_VERSION "0.1b14"
+#define CSH_VERSION "0.1b15"
+extern int term_zok;            /* term.c: the console knows OSC 7728 (CCON 1.3.1b3+, CTerm) */
 #define CSH_DATE    "25.10.2026"
 
 #ifndef CMD_INTERNAL

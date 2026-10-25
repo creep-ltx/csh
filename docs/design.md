@@ -128,7 +128,7 @@ saved layout can start the program again with its arguments.
 **What csh still lacks** (the list to work from):
 - size: 137 KB (was 95): the language could be a part loaded when first used (the user's rule:
   modular, load on demand); never measured slower to start (84 ms either way on the A1200).
-- jobs cannot be stopped (Ctrl-Z), `kill` is a Ctrl-C (see "Ctrl-Z" below).
+- jobs cannot be stopped; Ctrl-Z sends a pipe to the background (0.1b15, in CCON and CTerm); `kill` is a Ctrl-C.
 - completion: the menu does not mark the name in the list; `**/` (globstar), extglob.
 - `read -d`, `declare -n` (namerefs), `${x@A}`, `${x@P}`; `exec` cannot replace csh (no exec on
   the Amiga): it runs the command and leaves.
@@ -219,6 +219,22 @@ run apart.
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
+
+**0.1b15 (2026-10-25): Ctrl-Z for pipes** (the user's choice: pipes only, through our consoles).
+The Amiga cannot stop a program safely, so Ctrl-Z means: the pipe goes on as a job, the prompt
+comes back ("[n] Running  line"); `fg` brings it back, Ctrl-Z again sends it back. How: (1) the
+last Amiga command of a pipe now runs in a process of its own too (lang.c; csh waits for every
+stage in waitjob) - in csh itself nothing could give the prompt back; Amiga scripts' pipes (run.c)
+keep the ROM Shell's way, and a csh stage at the end (`... | read x`) still runs in csh.
+_CMDLINE is set around the wait. (2) csh allocates a signal and, while it waits, tells the
+console with `ESC ] 7728 ; N BEL` (empty N = off) - only when the console said it knows it:
+DISK_INFO id_DiskType ID_CTRM (CTerm drops unknown OSCs) or 'CCON' with id_NumSoftErrors 7728
+(CCON 1.3.1b3; 1.3.0 would retitle the window); a stock CON: printed the sequence. (3) CCON
+1.3.1b3 and CTerm 0.3b55 send that signal to their reader (csh) on Ctrl-Z in line mode. Tests:
+lang_test's pipes now `[spawn ...]` for the last stage (9 changed); verified in FS-UAE 3.2.1 in
+CCON, CTerm and a stock CON: (no junk, Ctrl-Z does nothing there): `Wait 30 | cat`, Ctrl-Z,
+jobs, fg, Ctrl-Z, fg + Ctrl-C, kill %1; output pipes and rc unchanged. Plan item (5) is done;
+(6) size is next.
 
 **0.1b14 (2026-10-25) INSTALLED on the A1200 the same day (L:csh, L:csh-0.1b13.bak kept, useshell; the user asked): a big paste no longer loses the middle of a line** (src/term.c
 term_open). At every prompt csh asks the console for the cursor (CSI 6n) and the window bounds

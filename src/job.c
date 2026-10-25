@@ -93,6 +93,12 @@ static void *mya4(void) { register void *r __asm__("a4"); return r; }
 
 static ULONG donesig;
 static int donebit = -1;
+/* Ctrl-Z (0.1b15): a console that knows OSC 7728 (CCON 1.3.1b3, CTerm
+ * 0.3b55) signals this bit to its break target - csh, waiting for a pipe
+ * - when Ctrl-Z is typed. Exec cannot stop a task safely, so Ctrl-Z does
+ * not stop the pipe: it goes on as a job and the prompt comes back. */
+static ULONG zsig;
+static int zbit = -1;
 static struct job *jobs;
 static struct job *disowned;    /* disown: running on, reaped quietly when done */
 static int lastbg;              /* $! */
@@ -187,7 +193,28 @@ static int jobinit(void)
     if (donebit >= 0) return 1;
     if ((donebit = AllocSignal(-1)) < 0) return 0;
     donesig = 1UL << donebit;
+    if ((zbit = AllocSignal(-1)) >= 0) zsig = 1UL << zbit;   /* none: no Ctrl-Z */
     return 1;
+}
+
+/* Tell the console which signal Ctrl-Z is (on) or that it is nothing again
+ * (off). Only to an interactive console of csh's own; a console that does
+ * not know OSC 7728 ignores it (CCON and CTerm drop unknown OSCs). */
+static int zison;
+
+static void zset(int on)
+{
+    char b[16];
+    int n;
+    if (!zsig || on == zison) return;
+    if (on && (term_zok != 1 || !os_interactive() || !IsInteractive(csh.out))) return;
+    os_flush();
+    memcpy(b, "\x1b]7728;", 7);
+    n = 7;
+    if (on) n += ltoa10(zbit, b + n);
+    b[n++] = 7;
+    Write(csh.out, b, n);
+    zison = on;
 }
 
 void *os_job_new(const char *text, int bg)
@@ -409,19 +436,26 @@ static void breakall(struct job *j)
 
 /* Waits for every stage; Ctrl-C goes on to each one still running. A
  * second Ctrl-C (a stage that ignores breaks) stops waiting: returns 1,
- * the job goes on in the background. */
-static int waitjob(struct job *j)
+ * the job goes on in the background. With ctrlz, Ctrl-Z from the console
+ * stops waiting too: returns 2, the same going on as a job. */
+static int waitjob(struct job *j, int ctrlz)
 {
-    int breaks = 0;
+    int breaks = 0, r = 0;
+    ULONG z = ctrlz ? zsig : 0;
+    if (z) { SetSignal(0, z); zset(1); }
     while (!alldone(j)) {
-        ULONG sig = Wait(donesig | SIGBREAKF_CTRL_C);
+        ULONG sig = Wait(donesig | SIGBREAKF_CTRL_C | z);
+        if (sig & z) { r = 2; break; }
         if (sig & SIGBREAKF_CTRL_C) {
-            if (++breaks >= 2) return 1;
+            if (++breaks >= 2) { r = 1; break; }
             breakall(j);
         }
     }
-    return 0;
+    if (z) { zset(0); SetSignal(0, z); }
+    return r;
 }
+
+static void say(struct job *j, const char *what, LONG rc);
 
 /* Everything given back; the last stage's rc (and its Result2 in *r2).
  * $RC is the caller's to set: a job ending in the background leaves it. */
@@ -471,13 +505,32 @@ long os_job_end(void *job, long lastrc, int lastinternal, long *rcs, int *nrcs)
             for (k = 0; k < 50 && !alldone(j); k++) Delay(1);
             if (!alldone(j)) breakall(j);
         }
-        if (waitjob(j)) {
-            /* Ctrl-C twice: a stage ignores breaks; it goes on as a job */
-            os_flush();
-            addjob(j);
-            FPuts(csh.out, "csh: still running, in the background now (jobs, fg, kill)\n");
-            set_rc(20, 0);
-            return 20;
+        {
+            int w;
+            /* the pipe's whole line as _CMDLINE while it runs (lastrun's,
+             * when the last stage ran in csh) */
+            if (!lastinternal) run_cmdline_begin(strlen(j->text) < sizeof j->text - 1 ? j->text : NULL, NULL);
+            w = waitjob(j, !lastinternal);
+            if (!lastinternal) run_cmdline_end();
+            if (w == 2) {
+                /* Ctrl-Z: on as a job, the prompt back (bash's "Stopped",
+                 * except that it runs on: the Amiga cannot stop it) */
+                addjob(j);
+                lastbg = j->id;
+                os_write("\n", 1);
+                say(j, "Running", 0);
+                os_flush();
+                set_rc(0, 0);
+                return 0;
+            }
+            if (w) {
+                /* Ctrl-C twice: a stage ignores breaks; it goes on as a job */
+                os_flush();
+                addjob(j);
+                FPuts(csh.out, "csh: still running, in the background now (jobs, fg, kill)\n");
+                set_rc(20, 0);
+                return 20;
+            }
         }
         DBG(("waited\n"));
         {   /* each stage's rc, for PIPESTATUS and pipefail */
@@ -772,7 +825,11 @@ long job_fg(const char *spec)
     os_write(j->text, strlen(j->text));
     os_write("\n", 1);
     os_flush();
-    if (waitjob(j)) { sh_error("fg: still running (Ctrl-C ignored):", j->text); return 20; }
+    {
+        int w = waitjob(j, 1);
+        if (w == 2) { os_write("\n", 1); say(j, "Running", 0); os_flush(); return 0; }   /* Ctrl-Z again */
+        if (w) { sh_error("fg: still running (Ctrl-C ignored):", j->text); return 20; }
+    }
     unlink_(j);
     rc = reap(j, NULL);
     FreeVec(j);
@@ -796,7 +853,7 @@ long job_wait(const char *spec)
     long id;
     if (!j && StrToLong((STRPTR)(spec[0] == '%' ? spec + 1 : spec), &id) > 0 && recalled(id, &old)) return old;
     if (!j) { sh_error("wait: no such job", spec); return 127; }
-    if (waitjob(j)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
+    if (waitjob(j, 0)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
     unlink_(j);
     {
         LONG rc = reap(j, NULL);
@@ -846,7 +903,7 @@ long job_waitall(void)
     struct job *j;
     LONG rc = 0;
     while ((j = jobs)) {
-        if (waitjob(j)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
+        if (waitjob(j, 0)) { sh_error("wait: still running (Ctrl-C ignored):", j->text); return 20; }
         unlink_(j);
         rc = reap(j, NULL);
         FreeVec(j);
@@ -878,5 +935,7 @@ void job_leave(void)
     disowned = NULL;
     if (donebit >= 0) FreeSignal(donebit);
     donebit = -1;
+    if (zbit >= 0) FreeSignal(zbit);
+    zbit = -1; zsig = 0;
     relaystop();
 }

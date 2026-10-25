@@ -103,12 +103,12 @@ int main(void)
     run("Type <<END\nline $x\nEND\n", "{heredoc T:hd1:line \n}[Type| <T:hd1]\n");
     run("x=1; Type <<'END'\nline $x\nEND\n", "{heredoc T:hd1:line $x\n}[Type| <T:hd1]\n");
     run("Type <<<word", "{heredoc T:hd1:word\n}[Type| <T:hd1]\n");
-    run("List | Sort", "{job List | Sort}[spawn List| in=1 out=11][last Sort| in=10]{end rc=0 own}\n");
+    run("List | Sort", "{job List | Sort}[spawn List| in=1 out=11][spawn Sort| in=10 out=2]{end rc=0}\n");
     run("Wait 5 &", "{job & Wait 5}[spawn Wait|5 in=1 out=2]{end rc=0}\n");
-    run("List Work: | Search * x | Sort", "{job List Work: | Search * x | Sort}[spawn List|Work: in=1 out=11][spawn Search|a.txt b.txt c.info dir x in=10 out=13][last Sort| in=12]{end rc=0 own}\n");
+    run("List Work: | Search * x | Sort", "{job List Work: | Search * x | Sort}[spawn List|Work: in=1 out=11][spawn Search|a.txt b.txt c.info dir x in=10 out=13][spawn Sort| in=12 out=2]{end rc=0}\n");
     run("List | while read l; do echo \"got $l\"; done", "{job List | while ...}[spawn List| in=1 out=11]{sel in=10 out=0}{/sel}{close 10}{end rc=0 own}\n");
-    run("echo hi | Sort", "{job echo hi | Sort}{sel in=1 out=51}hi\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\n");
-    run("List >f.txt | Sort", "{job List | Sort}[spawn List| in=1 out=11 >f.txt][last Sort| in=10]{end rc=0 own}\n");
+    run("echo hi | Sort", "{job echo hi | Sort}{sel in=1 out=51}hi\n{/sel}{close 51}[spawn Sort| in=151 out=2]{end rc=0}\n");
+    run("List >f.txt | Sort", "{job List | Sort}[spawn List| in=1 out=11 >f.txt][spawn Sort| in=10 out=2]{end rc=0}\n");
     run("jobs; fg; kill %1; wait; wait 5", "[jobs]\n[fg]\n[kill]\n[wait]\n[wait|5]\n");
     /* control */
     run("if true; then echo yes; else echo no; fi", "yes\n");
@@ -212,7 +212,7 @@ int main(void)
     run("List 2>/dev/null", "[List| *>NIL:]\n");
     run("alias ls='ls -F'; ls x", "[ls|-F x]\n");
     run("alias e='echo'; e '$HOME' 'it\"s' \"a'b\"", "$HOME it\"s a'b\n");
-    run("n=0; c() { n=$((n+1)); echo List; }; $(c) | Sort; echo ran $n", "{job $(c) | Sort}{sel in=1 out=51}[List|]\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\nran 0\n");
+    run("n=0; c() { n=$((n+1)); echo List; }; $(c) | Sort; echo ran $n", "{job $(c) | Sort}{sel in=1 out=51}[List|]\n{/sel}{close 51}[spawn Sort| in=151 out=2]{end rc=0}\nran 0\n");
     run("{ echo hi; } >NOSUCH:x; echo rc $?", "{redir failed}rc 20\n");
     run("f() { echo in; }; f >NOSUCH:x; echo rc $?", "{redir failed}rc 20\n");
     run("echo >NOSUCH:x hi; echo rc $?", "{redir failed}rc 20\n");
@@ -335,7 +335,7 @@ int main(void)
     run("printf '%05.1f|%+.0f|%.3g|%G\\n' 9.96 2.5 1234.5 0.000012", "010.0|+2|1.23e+03|1.2E-05\n");
     run("printf -v out '%s-%d' a 5; echo $out", "a-5\n");
     run("set -u; echo ${undefined:-ok}; echo $undefined; echo no", "ok\ncsh: unbound variable: undefined\n");
-    run("set -o pipefail; set -o | Sort", "{job set -o | Sort}{sel in=1 out=51}errexit\toff\nxtrace\toff\nnounset\toff\nnoglob\toff\npipefail\ton\nhistexpand\ton\n{/sel}{close 51}[last Sort| in=151]{end rc=0 own}\n");
+    run("set -o pipefail; set -o | Sort", "{job set -o | Sort}{sel in=1 out=51}errexit\toff\nxtrace\toff\nnounset\toff\nnoglob\toff\npipefail\ton\nhistexpand\ton\n{/sel}{close 51}[spawn Sort| in=151 out=2]{end rc=0}\n");
     run("set -euo pipefail; echo $-", "eu\n");
     run("set -f; echo *.txt; List *.txt; set +f; echo *.txt", "*.txt\n[List|#?.txt]\na.txt b.txt\n");
     run("echo *.txt *.none \"*.txt\" '*'", "a.txt b.txt *.none *.txt *\n");
@@ -348,10 +348,10 @@ int main(void)
     run("set -- a b; (set -- z; echo $1); echo $1", "z\na\n");
     run("cd -; echo $?", "csh: cd: OLDPWD not set\n10\n");
     run("cat <(echo hi)", "{heredoc T:hd1:hi\n}[cat|T:hd1]\n");
-    run("List |& Sort", "{job List | Sort}[spawn List| in=1 out=11 2>&1][last Sort| in=10]{end rc=0 own}\n");
-    run("f() { echo f; }; f | Sort", "{job f | Sort}{heredoc T:hd1:#!csh\nf () { echo f; }\nset --\nf \n}[spawn csh|FROM T:hd1 in=1 out=11][last Sort| in=10]{end rc=0 own}\n");
+    run("List |& Sort", "{job List | Sort}[spawn List| in=1 out=11 2>&1][spawn Sort| in=10 out=2]{end rc=0}\n");
+    run("f() { echo f; }; f | Sort", "{job f | Sort}{heredoc T:hd1:#!csh\nf () { echo f; }\nset --\nf \n}[spawn csh|FROM T:hd1 in=1 out=11][spawn Sort| in=10 out=2]{end rc=0}\n");
     run("echo bg &", "{job & echo bg}{heredoc T:hd1:#!csh\nset --\necho bg \n}[spawn csh|FROM T:hd1 in=1 out=2]{end rc=0}\n");
-    run("List | Sort; echo ${PIPESTATUS[@]}", "{job List | Sort}[spawn List| in=1 out=11][last Sort| in=10]{end rc=0 own}\n0 0\n");
+    run("List | Sort; echo ${PIPESTATUS[@]}", "{job List | Sort}[spawn List| in=1 out=11][spawn Sort| in=10 out=2]{end rc=0}\n0 0\n");
     runin("l1\nl2\n", "mapfile -t L; echo ${#L[@]} ${L[1]}", "2 l2\n");
     runin("w1 w2  w3\n", "read -a W; echo ${#W[@]} ${W[2]}", "3 w3\n");
     run("echo $((RANDOM >= 0 && RANDOM < 32768))", "1\n");
