@@ -220,7 +220,7 @@ run apart.
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
 
-**0.1b16 (2026-10-25): about 10 KB less in every csh window** (plan item 6, changed with the
+**0.1b16 (2026-10-25) INSTALLED on the A1200 the same day (L:csh, L:csh-0.1b14.bak kept; with CCON 1.3.1b3 and CTerm 0.3b55; Ctrl-Z checked there in CCON and CTerm; the user asked): about 10 KB less in every csh window** (plan item 6, changed with the
 user's OK). Measured first: every typed line goes through the language, so loading it on first
 use would load it at the first prompt; and csh is resident, its code (~140 KB) is in memory once
 for all windows. What grows per window is csh's data, a copy each: 52.1 KB. Tab completion's
