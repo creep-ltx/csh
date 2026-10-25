@@ -335,14 +335,30 @@ int comp_kind(const char *word, int n, int cheap)
 #define MAXM 400
 static char *mpool;
 static int mlen, mcap = 16384;
-static char *mname[MAXM];
-static char mtype[MAXM];          /* 0 file/command, 1 drawer, 2 assign/volume (':' in it) */
+/* 0.1b16: the match lists and the name copies are only needed while a
+ * Tab is being answered - allocated then (lzget) and given back at the end
+ * of the line (comp_end), not ~10 KB in every csh window for good. Every
+ * reader of mname/mtype runs after madd() made nm > 0, so lz exists. */
+static struct lazy {
+    char *mname[MAXM];
+    char mtype[MAXM];             /* 0 file/command, 1 drawer, 2 assign/volume (':' in it) */
+    char rn[64][32];              /* the resident list's names (mcommands) */
+    char dn[64][34];              /* the device list's names (mdevices) */
+} *lz;
+#define mname (lz->mname)
+#define mtype (lz->mtype)
 static int nm, listed;
+
+static int lzget(void)
+{
+    if (!lz) lz = AllocVec(sizeof *lz, MEMF_ANY);
+    return lz != NULL;
+}
 
 static void madd(const char *s, int n, int type)
 {
     int i;
-    if (nm >= MAXM) return;
+    if (nm >= MAXM || !lzget()) return;
     if (!mpool && !(mpool = AllocVec(mcap, MEMF_ANY))) return;
     if (mlen + n + 1 > mcap) return;
     for (i = 0; i < nm; i++) if ((int)strlen(mname[i]) == n && ieq(mname[i], s, n)) return;
@@ -366,8 +382,10 @@ static void mcommands(const char *p, int n)
         if ((lv->lv_Node.ln_Type & 0x7f) == LV_ALIAS && iprefix(lv->lv_Node.ln_Name, p, n))
             madd(lv->lv_Node.ln_Name, strlen(lv->lv_Node.ln_Name), 0);
     {   /* the resident list: names copied under Forbid, nothing else done there */
-        static char rn[64][32];
+        char (*rn)[32];
         int nr = 0;
+        if (!lzget()) return;
+        rn = lz->rn;
         Forbid();
         for (s = BADDR(*(BPTR *)((UBYTE *)di + 0x10)); s && nr < 64; s = BADDR(s->seg_Next)) {
             int l = s->seg_Name[0];
@@ -431,9 +449,11 @@ static void mfiles(const char *dir, const char *p, int n)
 
 static void mdevices(const char *p, int n)
 {
-    static char dn[64][34];
+    char (*dn)[34];
     struct DosList *dl;
     int nd = 0, i;
+    if (!lzget()) return;
+    dn = lz->dn;
     dl = LockDosList(LDF_READ | LDF_ASSIGNS | LDF_VOLUMES | LDF_DEVICES);
     while ((dl = NextDosEntry(dl, LDF_ASSIGNS | LDF_VOLUMES | LDF_DEVICES)) && nd < 64) {
         UBYTE *b = BADDR(dl->dol_Name);
@@ -612,19 +632,24 @@ static int tplmany(const char *t)
     return 0;
 }
 
+#define TBUF 4096
+static char *tbuf;              /* 0.1b16: tplfromfile's reading buffer, made on first use */
+
 /* The best template in a program file (the longest run of ReadArgs parts), os_alloc'ed. */
 static char *tplfromfile(BPTR lock)
 {
     BPTR fh = OpenFromLock(lock);
-    static char buf[4096];
+    char *buf;
     char best[320], run[320];
     int bestscore = 0, rl = 0;
     LONG n, total = 0;
     if (!fh) { UnLock(lock); return NULL; }
+    if (!tbuf && !(tbuf = AllocVec(TBUF, MEMF_ANY))) { Close(fh); return NULL; }
+    buf = tbuf;
     best[0] = 0;
     /* the template sits in the code or data, near the start in the programs
      * looked at: 160 KB read at most (a floppy reads that in a few seconds) */
-    while (total < 160000 && (n = Read(fh, buf, sizeof buf)) > 0) {
+    while (total < 160000 && (n = Read(fh, buf, TBUF)) > 0) {
         LONG i;
         total += n;
         for (i = 0; i < n; i++) {
@@ -952,7 +977,10 @@ void comp_end(void)
     if (pool) FreeVec(pool);
     if (slot) FreeVec(slot);
     if (mpool) FreeVec(mpool);
-    pool = NULL; slot = NULL; mpool = NULL;
+    if (lz) FreeVec(lz);
+    if (tbuf) FreeVec(tbuf);
+    pool = NULL; slot = NULL; mpool = NULL; lz = NULL; tbuf = NULL;
+    nm = 0; menuon = 0;
     poollen = poolcap = 0; nslots = tnames = 0; built = 0;
     for (i = 0; i < ncdir; i++) UnLock(cdir[i]);
     ncdir = 0;

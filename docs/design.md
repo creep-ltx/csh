@@ -21,8 +21,8 @@ note in its design.md or a message, never an edit there. Shared things:
   (1) ~~`_CMDLINE`~~ done in 0.1b9; (2) ~~FileColours in Maki~~ done (Maki 0.1b2 lists a
   drawer coloured, its src/filecol.c a copy of CUtils' lib/cu_colours.c; Ahiru 0.3b3);
   (3) ~~completion of a keyword's value, menu selection~~ done (0.1b9); (4) ~~the small bash
-  bits~~ done (0.1b9); (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) size - the
-  language as a part loaded on first use (last: it touches everything).
+  bits~~ done (0.1b9); (5) jobs: `$!`, `disown`, `wait -n`, then Ctrl-Z; (6) ~~size~~ done in 0.1b16 as per-window
+  data (the language split would save nothing: see 0.1b16).
   Install on the A1200 only when the user says so (as always, csh and cshell together).
 
 **0.1b9 INSTALLED on the A1200 2026-10-15 (the user asked): C:csh, C:cshell (0.1b8 kept as
@@ -219,6 +219,16 @@ run apart.
 | cshell as the Shell (`Resident shell cshell REPLACE`, code shared) | ~155 000 |
 
 ## One csh (0.1b11, 2026-10-15: the user's plan, steps 1-4 done in FS-UAE)
+
+**0.1b16 (2026-10-25): about 10 KB less in every csh window** (plan item 6, changed with the
+user's OK). Measured first: every typed line goes through the language, so loading it on first
+use would load it at the first prompt; and csh is resident, its code (~140 KB) is in memory once
+for all windows. What grows per window is csh's data, a copy each: 52.1 KB. Tab completion's
+match lists and name copies (mname/mtype, the resident and device names) and tplfromfile's 4 KB
+buffer are now allocated when a Tab (or a template) needs them and given back at the end of the
+line (comp_end): 41.8 KB per window (m68k-amigaos-nm --size-sort on build-shell/*.o, main-csh
+not counted). kinds[] (the colours while typing) and tpl[] (the /M check when running) stay.
+Verified in FS-UAE 3.2.1: tests/comptest.sh ok, Resident completed by Tab.
 
 **0.1b15 (2026-10-25): Ctrl-Z for pipes** (the user's choice: pipes only, through our consoles).
 The Amiga cannot stop a program safely, so Ctrl-Z means: the pipe goes on as a job, the prompt
