@@ -700,7 +700,7 @@ From CCON (which already feels like fish/bash/zsh) and CTerm's console:
 
 Knowledge and ideas, not code copied blindly (CCON and CUtils are Amiga E, csh is C):
 
-- **CCON** (`AmigaTools/ccon`): the line editor's feel, KingCON's keys, command completion from
+- **CCON** (`../CCon`): the line editor's feel, KingCON's keys, command completion from
   the resident list, `C:` and the Path, the config rule (built-in < file < given now).
 - **CTerm** (`CTerm/src/console.c`): the 3.2 Shell handshake, completion against the current
   drawer, Ctrl-C delivery (CHANGE_SIGNAL: signal the port's task), a Shell on a FileHandle.
